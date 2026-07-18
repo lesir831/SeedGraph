@@ -126,14 +126,16 @@ make run
 `main` 分支通过全部检查后会构建 `linux/amd64` 与 `linux/arm64` 镜像，并推送到 GitHub Container Registry：
 
 ```bash
-docker pull ghcr.io/lesir831/seedgraph:edge
+docker pull ghcr.io/lesir831/seedgraph
 ```
 
-`edge` 始终指向最新的已通过检查的 `main` 提交；工作流还会发布 `sha-<commit>` 标签并生成 SBOM 与来源证明，便于固定和验证具体构建。
+`latest` 与 `edge` 始终指向最新的已通过检查的 `main` 提交；工作流还会发布 `sha-<commit>` 标签并生成 SBOM 与来源证明，便于固定和验证具体构建。
+
+包历史中形如 `sha256-<digest>` 的条目是来源证明对象，不是可运行镜像标签。固定镜像摘要时使用 `@sha256:<digest>`，例如 `docker pull ghcr.io/lesir831/seedgraph@sha256:...`，不要把摘要改写成冒号后的标签。
 
 GitHub 新建的容器包默认是私有的。保持私有时，先使用具备 `read:packages` 权限的令牌登录 `ghcr.io`；如需匿名拉取，请在首次发布后到包设置中把可见性改为 Public。公开包后不能再改回私有。
 
-推送符合 SemVer 的标签（例如 `v0.1.0` 或 `v0.1.0-rc.1`）会触发稳定版发布工作流：再次验证前后端，推送版本标签和提交标签，并创建 GitHub Release。非预发布版本还会更新 `latest`；`edge` 与 `latest` 互不覆盖。
+推送符合 SemVer 的标签（例如 `v0.1.0` 或 `v0.1.0-rc.1`）会触发稳定版发布工作流：再次验证前后端，推送版本标签和提交标签，并创建 GitHub Release。版本发布不会覆盖由 `main` 维护的 `latest` 与 `edge`。
 
 ## API 与安全边界
 
