@@ -1,0 +1,46 @@
+services:
+  seedgraph:
+    build:
+      context: .
+    image: seedgraph:local
+    container_name: seedgraph
+    restart: unless-stopped
+    environment:
+      SEEDGRAPH_LISTEN_ADDR: ":8080"
+      SEEDGRAPH_DATABASE_PATH: /data/seedgraph.db
+      SEEDGRAPH_WEB_DIR: /app/web
+      SEEDGRAPH_ADMIN_PASSWORD: "${SEEDGRAPH_ADMIN_PASSWORD:?set SEEDGRAPH_ADMIN_PASSWORD in .env}"
+      SEEDGRAPH_SECRET_KEY: "${SEEDGRAPH_SECRET_KEY:?set SEEDGRAPH_SECRET_KEY in .env}"
+      SEEDGRAPH_COOKIE_SECURE: "${SEEDGRAPH_COOKIE_SECURE:-false}"
+      SEEDGRAPH_SYNC_INTERVAL: "${SEEDGRAPH_SYNC_INTERVAL:-30s}"
+      SEEDGRAPH_FULL_SYNC_INTERVAL: "${SEEDGRAPH_FULL_SYNC_INTERVAL:-30m}"
+      SEEDGRAPH_STALE_AFTER: "${SEEDGRAPH_STALE_AFTER:-5m}"
+      SEEDGRAPH_IYUU_SYNC_ENABLED: "${SEEDGRAPH_IYUU_SYNC_ENABLED:-true}"
+      SEEDGRAPH_IYUU_SYNC_INTERVAL: "${SEEDGRAPH_IYUU_SYNC_INTERVAL:-24h}"
+      SEEDGRAPH_IYUU_SITES_URL: "${SEEDGRAPH_IYUU_SITES_URL:-https://2025.iyuu.cn/reseed/sites/index}"
+    ports:
+      - "${SEEDGRAPH_BIND_ADDRESS:-127.0.0.1}:8080:8080"
+    volumes:
+      - seedgraph-data:/data
+    read_only: true
+    tmpfs:
+      - /tmp:size=32m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:8080/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    stop_grace_period: 15s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  seedgraph-data:

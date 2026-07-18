@@ -1,0 +1,14 @@
+.git
+.github
+.DS_Store
+.env
+data
+dist
+frontend/node_modules
+frontend/dist
+frontend/coverage
+coverage
+*.db
+*.db-shm
+*.db-wal
+*.log

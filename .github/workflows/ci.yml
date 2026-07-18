@@ -1,0 +1,170 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  merge_group:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: Go
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+          cache-dependency-path: go.sum
+
+      - name: Verify modules
+        run: |
+          go mod download
+          go mod verify
+          go mod tidy
+          git diff --exit-code -- go.mod go.sum
+
+      - name: Check formatting
+        shell: bash
+        run: |
+          set -euo pipefail
+          unformatted="$(gofmt -l cmd internal)"
+          if [[ -n "$unformatted" ]]; then
+            echo "The following Go files need formatting:"
+            printf '%s\n' "$unformatted"
+            exit 1
+          fi
+
+      - name: Lint
+        uses: golangci/golangci-lint-action@v9
+        with:
+          version: v2.12
+          args: --timeout=5m
+
+      - name: Test
+        run: go test -race -shuffle=on -count=1 -coverprofile=coverage.out ./cmd/... ./internal/...
+
+      - name: Build
+        run: go build -trimpath ./cmd/seedgraph
+
+  frontend:
+    name: Frontend
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Type-check
+        run: npm run typecheck
+
+      - name: Test
+        run: npm test
+
+      - name: Build
+        run: npm run build
+
+  container:
+    name: Docker image
+    needs: [backend, frontend]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Validate Compose configuration
+        run: docker compose --env-file .env.example config --quiet
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Build image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          load: true
+          push: false
+          tags: seedgraph:ci
+          cache-from: |
+            type=gha,scope=ci-main
+            type=gha,scope=ci-${{ github.event.pull_request.number || 'main' }}
+          cache-to: type=gha,mode=max,scope=ci-${{ github.event.pull_request.number || 'main' }}
+          provenance: false
+          sbom: false
+
+      - name: Smoke-test image
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+
+          container_id="$(docker run --detach \
+            --publish 127.0.0.1:18080:8080 \
+            --env SEEDGRAPH_ADMIN_PASSWORD=ci-password \
+            --env SEEDGRAPH_SECRET_KEY=ci-only-secret-key-at-least-32-bytes \
+            --env SEEDGRAPH_DATABASE_PATH=/tmp/seedgraph-ci.db \
+            --env SEEDGRAPH_COOKIE_SECURE=false \
+            --env SEEDGRAPH_IYUU_SYNC_ENABLED=false \
+            seedgraph:ci)"
+
+          cleanup() {
+            status=$?
+            trap - EXIT
+            if (( status != 0 )); then
+              echo "Container logs:"
+              docker logs "$container_id" || true
+            fi
+            docker rm --force "$container_id" >/dev/null 2>&1 || true
+            exit "$status"
+          }
+          trap cleanup EXIT
+
+          for _ in {1..30}; do
+            if curl --fail --silent http://127.0.0.1:18080/healthz >/dev/null; then
+              exit 0
+            fi
+            if [[ "$(docker inspect --format '{{.State.Running}}' "$container_id")" != "true" ]]; then
+              echo "Container exited before becoming healthy."
+              exit 1
+            fi
+            sleep 1
+          done
+
+          echo "Timed out waiting for /healthz."
+          exit 1
