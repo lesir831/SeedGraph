@@ -170,7 +170,7 @@ jobs:
           exit 1
 
   publish-image:
-    name: Publish edge image
+    name: Publish main image
     if: >-
       github.ref == 'refs/heads/main' &&
       (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
@@ -217,6 +217,7 @@ jobs:
           images: ${{ steps.image.outputs.name }}
           flavor: latest=false
           tags: |
+            type=raw,value=latest
             type=raw,value=edge
             type=sha,prefix=sha-
 
@@ -242,8 +243,6 @@ jobs:
         with:
           subject-name: ${{ steps.image.outputs.name }}
           subject-digest: ${{ steps.push.outputs.digest }}
-          push-to-registry: true
-          create-storage-record: false
 
       - name: Summarize published image
         shell: bash
@@ -252,8 +251,8 @@ jobs:
           IMAGE_DIGEST: ${{ steps.push.outputs.digest }}
         run: |
           {
-            echo "### Published edge image"
+            echo "### Published main image"
             echo
-            echo "- Mutable tag: \`$IMAGE_NAME:edge\`"
+            echo "- Mutable tags: \`$IMAGE_NAME:latest\`, \`$IMAGE_NAME:edge\`"
             echo "- Immutable digest: \`$IMAGE_NAME@$IMAGE_DIGEST\`"
           } >> "$GITHUB_STEP_SUMMARY"
