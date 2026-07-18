@@ -123,7 +123,17 @@ make run
 
 推送和拉取请求会运行 Go 模块校验、格式检查、golangci-lint、race tests、前端 lint/typecheck/tests/build，以及容器构建和 `/healthz` 冒烟测试。
 
-推送符合 SemVer 的标签（例如 `v0.1.0` 或 `v0.1.0-rc.1`）会触发发布工作流：再次验证前后端，构建 `linux/amd64` 与 `linux/arm64` 镜像，推送到 `ghcr.io/lesir831/seedgraph`，生成 SBOM/来源证明，并创建 GitHub Release。
+`main` 分支通过全部检查后会构建 `linux/amd64` 与 `linux/arm64` 镜像，并推送到 GitHub Container Registry：
+
+```bash
+docker pull ghcr.io/lesir831/seedgraph:edge
+```
+
+`edge` 始终指向最新的已通过检查的 `main` 提交；工作流还会发布 `sha-<commit>` 标签并生成 SBOM 与来源证明，便于固定和验证具体构建。
+
+GitHub 新建的容器包默认是私有的。保持私有时，先使用具备 `read:packages` 权限的令牌登录 `ghcr.io`；如需匿名拉取，请在首次发布后到包设置中把可见性改为 Public。公开包后不能再改回私有。
+
+推送符合 SemVer 的标签（例如 `v0.1.0` 或 `v0.1.0-rc.1`）会触发稳定版发布工作流：再次验证前后端，推送版本标签和提交标签，并创建 GitHub Release。非预发布版本还会更新 `latest`；`edge` 与 `latest` 互不覆盖。
 
 ## API 与安全边界
 
