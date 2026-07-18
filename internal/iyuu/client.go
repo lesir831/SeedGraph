@@ -170,7 +170,7 @@ func New(config Config) (*Client, error) {
 // Sites fetches a complete catalog. A nil result is returned on every error;
 // callers can therefore apply the returned slice transactionally without ever
 // persisting a partially validated response.
-func (client *Client) Sites(ctx context.Context) ([]Site, error) {
+func (client *Client) Sites(ctx context.Context) (result []Site, resultErr error) {
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, client.endpoint, nil)
 	if err != nil {
 		return nil, fmt.Errorf("create IYUU sites request: %w", ErrInvalidConfig)
@@ -188,7 +188,12 @@ func (client *Client) Sites(ctx context.Context) ([]Site, error) {
 		}
 		return nil, fmt.Errorf("request IYUU sites: %s", safeRemoteText(err.Error(), client.token))
 	}
-	defer response.Body.Close()
+	defer func() {
+		if closeErr := response.Body.Close(); closeErr != nil {
+			result = nil
+			resultErr = errors.Join(resultErr, errors.New("close IYUU response body"))
+		}
+	}()
 
 	if response.StatusCode != http.StatusOK {
 		return nil, &HTTPError{
@@ -368,7 +373,9 @@ func isHostnameOnly(value string) bool {
 			return false
 		}
 		for _, char := range label {
-			if !((char >= 'a' && char <= 'z') || (char >= 'A' && char <= 'Z') || (char >= '0' && char <= '9') || char == '-') {
+			isLetter := (char >= 'a' && char <= 'z') || (char >= 'A' && char <= 'Z')
+			isDigit := char >= '0' && char <= '9'
+			if !isLetter && !isDigit && char != '-' {
 				return false
 			}
 		}

@@ -136,6 +136,25 @@ func TestSitesSuccessUsesContractAndReturnsCompleteCatalog(t *testing.T) {
 	}
 }
 
+func TestSitesReturnsGenericCloseFailureWithoutCatalog(t *testing.T) {
+	t.Parallel()
+	const payload = `{"code":0,"data":{"count":0,"sites":[]},"msg":"ok"}`
+	transport := roundTripFunc(func(*http.Request) (*http.Response, error) {
+		response := jsonResponse(http.StatusOK, payload, nil)
+		response.Body = closeErrorBody{Reader: strings.NewReader(payload)}
+		return response, nil
+	})
+	client := mustClient(t, Config{
+		BaseURL:    "https://iyuu.test",
+		HTTPClient: &http.Client{Transport: transport},
+	})
+
+	sites, err := client.Sites(context.Background())
+	if sites != nil || err == nil || err.Error() != "close IYUU response body" {
+		t.Fatalf("Sites() = (%#v, %v), want nil catalog and generic close error", sites, err)
+	}
+}
+
 func TestSitesOmitsEmptyTokenHeaderAndAcceptsEmptyCatalog(t *testing.T) {
 	t.Parallel()
 	transport := roundTripFunc(func(request *http.Request) (*http.Response, error) {
@@ -383,6 +402,14 @@ type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (function roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
 	return function(request)
+}
+
+type closeErrorBody struct {
+	io.Reader
+}
+
+func (closeErrorBody) Close() error {
+	return errors.New("sensitive transport detail")
 }
 
 func mustClient(t *testing.T, config Config) *Client {

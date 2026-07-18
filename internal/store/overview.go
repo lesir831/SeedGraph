@@ -109,7 +109,7 @@ func (s *Store) ListAuditEvents(ctx context.Context, limit int) ([]AuditEvent, e
 	if err != nil {
 		return nil, fmt.Errorf("list audit events: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	events := make([]AuditEvent, 0)
 	for rows.Next() {
 		var event AuditEvent
@@ -160,7 +160,7 @@ func (s *Store) ListAuditEventsPage(ctx context.Context, action, status string, 
 	if err != nil {
 		return nil, 0, fmt.Errorf("list audit events: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	events := make([]AuditEvent, 0)
 	for rows.Next() {
 		var event AuditEvent

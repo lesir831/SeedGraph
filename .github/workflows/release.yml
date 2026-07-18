@@ -71,7 +71,7 @@ jobs:
         uses: golangci/golangci-lint-action@v9
         with:
           version: v2.12
-          args: --timeout=5m
+          args: --timeout=5m ./cmd/... ./internal/...
 
       - name: Test
         run: go test -race -shuffle=on -count=1 ./cmd/... ./internal/...

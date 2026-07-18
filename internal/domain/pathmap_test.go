@@ -23,7 +23,7 @@ func TestApplyPathMappingsLongestDirectoryBoundary(t *testing.T) {
 		t.Fatalf("ApplyPathMappings() = %#v, want %#v", got, want)
 	}
 
-	got, err = ApplyPathMappings("qb", "/downloads2/file.mkv", mappings)
+	_, err = ApplyPathMappings("qb", "/downloads2/file.mkv", mappings)
 	if !errors.Is(err, ErrNoPathMapping) {
 		t.Fatalf("boundary mismatch error = %v, want ErrNoPathMapping", err)
 	}

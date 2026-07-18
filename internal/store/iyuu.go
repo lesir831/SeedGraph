@@ -159,7 +159,7 @@ func (s *Store) ListIYUUSites(ctx context.Context) ([]IYUUSite, IYUUSyncState, e
 	if err != nil {
 		return nil, IYUUSyncState{}, fmt.Errorf("list IYUU sites: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	items := make([]IYUUSite, 0)
 	for rows.Next() {
 		var item IYUUSite

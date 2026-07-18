@@ -492,7 +492,7 @@ func (s *Store) GetDeleteJob(ctx context.Context, id string) (DeleteJob, error) 
 	if err != nil {
 		return DeleteJob{}, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	for rows.Next() {
 		var step DeleteJobStep
 		var deleteData int

@@ -347,7 +347,7 @@ func (s *Store) ListSyncRuns(ctx context.Context, limit int) ([]SyncRun, error) 
 	if err != nil {
 		return nil, fmt.Errorf("list sync runs: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	runs := make([]SyncRun, 0)
 	for rows.Next() {
 		var run SyncRun

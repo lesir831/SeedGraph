@@ -158,7 +158,7 @@ func (s *Store) ListTorrentGroups(ctx context.Context, filters GroupFilters) ([]
 	if err != nil {
 		return nil, 0, fmt.Errorf("list torrent groups: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	groups := make([]TorrentGroup, 0)
 	for rows.Next() {
 		var group TorrentGroup
@@ -207,7 +207,7 @@ func (s *Store) GetTorrentGroup(ctx context.Context, id string, staleBefore time
 	if err != nil {
 		return TorrentGroupDetail{}, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	detail := TorrentGroupDetail{TorrentGroup: summary}
 	for rows.Next() {
 		var instance TorrentInstanceView
@@ -243,7 +243,7 @@ func (s *Store) instanceSites(ctx context.Context, instanceID string) ([]string,
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	result := make([]string, 0)
 	for rows.Next() {
 		var value string
@@ -745,7 +745,7 @@ func loadMembersForGroupsTx(
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	members := make([]groupOperationMemberState, 0)
 	for rows.Next() {
 		var member groupOperationMemberState

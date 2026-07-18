@@ -11,7 +11,6 @@ import (
 	"net"
 	"net/http"
 	"strconv"
-	"strings"
 	"sync"
 	"time"
 
@@ -275,8 +274,6 @@ func (l *loginLimiter) Reset(address string) {
 	l.mu.Unlock()
 }
 
-func stringPtr(value string) *string { return &value }
-
 func normalizeJobStatus(status string) string {
 	switch status {
 	case "completed":
@@ -289,5 +286,3 @@ func normalizeJobStatus(status string) string {
 		return "running"
 	}
 }
-
-func trim(value string) string { return strings.TrimSpace(value) }

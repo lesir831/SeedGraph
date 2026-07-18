@@ -101,7 +101,7 @@ func (s *Store) ListTrackerRules(ctx context.Context) ([]TrackerRule, error) {
 	if err != nil {
 		return nil, fmt.Errorf("list tracker rules: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	result := make([]TrackerRule, 0)
 	for rows.Next() {
 		rule, err := scanTrackerRule(rows)

@@ -30,7 +30,7 @@ func main() {
 	}
 }
 
-func run(logger *slog.Logger) error {
+func run(logger *slog.Logger) (runErr error) {
 	cfg, err := config.Load()
 	if err != nil {
 		return err
@@ -46,7 +46,9 @@ func run(logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-	defer database.Close()
+	defer func() {
+		runErr = errors.Join(runErr, database.Close())
+	}()
 	passwordHash, err := auth.HashPassword(cfg.AdminPassword)
 	if err != nil {
 		return err

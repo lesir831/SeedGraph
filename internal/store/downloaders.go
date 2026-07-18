@@ -114,7 +114,7 @@ func (s *Store) ListDownloaders(ctx context.Context) ([]Downloader, error) {
 	if err != nil {
 		return nil, fmt.Errorf("list downloaders: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	result := make([]Downloader, 0)
 	for rows.Next() {
@@ -157,7 +157,7 @@ func (s *Store) listPathMappings(ctx context.Context, downloaderID string) ([]Pa
 	if err != nil {
 		return nil, fmt.Errorf("list path mappings: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	result := make([]PathMapping, 0)
 	for rows.Next() {
 		var mapping PathMapping
