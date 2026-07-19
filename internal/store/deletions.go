@@ -137,7 +137,7 @@ func (s *Store) RevalidateDeletePlan(ctx context.Context, saved SavedDeletePlan,
 func buildDeletionSnapshotTx(ctx context.Context, tx *sql.Tx, staleBefore time.Time) (domain.DeletionSnapshot, error) {
 	var snapshot domain.DeletionSnapshot
 	rows, err := tx.QueryContext(ctx, `
-        SELECT ti.id, ti.downloader_id, ti.stable_hash_key, ti.remote_id, ti.name,
+		SELECT ti.id, ti.downloader_id, d.name, ti.stable_hash_key, ti.remote_id, ti.name,
                ti.storage_id, ti.source_path, ti.canonical_path, ti.wanted_bytes,
                ti.selected_file_count, ti.manifest_fingerprint, ti.content_group_id,
                ti.data_group_id, ti.assignment_source, d.online,
@@ -156,7 +156,7 @@ func buildDeletionSnapshotTx(ctx context.Context, tx *sql.Tx, staleBefore time.T
 		var lastSeen int64
 		var deleted sql.NullInt64
 		if err := rows.Scan(
-			&instance.ID, &instance.DownloaderID, &instance.ExternalKey, &instance.RemoteID, &instance.Name,
+			&instance.ID, &instance.DownloaderID, &instance.DownloaderName, &instance.ExternalKey, &instance.RemoteID, &instance.Name,
 			&instance.StorageID, &instance.ContentPath, &instance.CanonicalPath, &instance.WantedBytes,
 			&instance.SelectedFileCount, &instance.FileSizeFingerprint, &instance.ContentGroupID,
 			&instance.DataGroupID, &assignment, &online, &stale, &instance.MetadataFingerprint,

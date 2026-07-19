@@ -33,7 +33,10 @@ type DeleteBlocker struct {
 	Code            DeleteBlockerCode `json:"code"`
 	Message         string            `json:"message"`
 	InstanceID      string            `json:"instance_id,omitempty"`
+	InstanceName    string            `json:"instance_name,omitempty"`
 	DownloaderID    string            `json:"downloader_id,omitempty"`
+	DownloaderName  string            `json:"downloader_name,omitempty"`
+	Path            string            `json:"path,omitempty"`
 	ContentGroupID  string            `json:"content_group_id,omitempty"`
 	DataGroupID     string            `json:"data_group_id,omitempty"`
 	ExpectedVersion uint64            `json:"expected_version,omitempty"`
@@ -303,11 +306,19 @@ func PlanDeletion(request DeleteRequest, snapshot DeletionSnapshot) DeletePlan {
 					continue
 				}
 				if occupant.StorageID == group.StorageID && pathsOverlap(occupant.CanonicalPath, group.CanonicalPath) {
+					occupantPath := occupant.ContentPath
+					if occupantPath == "" {
+						occupantPath = occupant.CanonicalPath
+					}
 					addBlocker(DeleteBlocker{
-						Code:        BlockerConflictingPathOccupant,
-						Message:     "another data group occupies the same physical path",
-						InstanceID:  occupant.ID,
-						DataGroupID: groupID,
+						Code:           BlockerConflictingPathOccupant,
+						Message:        "another data group occupies the same physical path",
+						InstanceID:     occupant.ID,
+						InstanceName:   occupant.Name,
+						DownloaderID:   occupant.DownloaderID,
+						DownloaderName: occupant.DownloaderName,
+						Path:           occupantPath,
+						DataGroupID:    groupID,
 					})
 				}
 			}

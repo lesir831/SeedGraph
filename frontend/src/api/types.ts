@@ -121,7 +121,10 @@ export interface DeletePlan {
     code: string
     message: string
     instanceId?: string
+    instanceName?: string
     downloaderId?: string
+    downloaderName?: string
+    path?: string
   }>
 }
 

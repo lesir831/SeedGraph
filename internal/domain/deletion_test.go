@@ -212,8 +212,11 @@ func TestPlanDeletionBlocksConflictingPhysicalPath(t *testing.T) {
 	snapshot.Instances = append(snapshot.Instances, TorrentInstance{
 		ID:               "occupant",
 		DownloaderID:     "qb",
+		DownloaderName:   "NAS qBittorrent",
 		ExternalKey:      "hash-occupant",
+		Name:             "Film extras",
 		StorageID:        "media",
+		ContentPath:      "/downloads/movies/Film/extras",
 		CanonicalPath:    "/movies/Film/extras",
 		WantedBytes:      101,
 		ContentGroupID:   "cg-other",
@@ -229,6 +232,16 @@ func TestPlanDeletionBlocksConflictingPhysicalPath(t *testing.T) {
 	plan := PlanDeletion(deleteRequest("a", "b"), snapshot)
 	if plan.Executable || !hasBlocker(plan, BlockerConflictingPathOccupant) {
 		t.Fatalf("same-path occupant was not blocked: %#v", plan)
+	}
+	var conflict DeleteBlocker
+	for _, blocker := range plan.Blockers {
+		if blocker.Code == BlockerConflictingPathOccupant {
+			conflict = blocker
+			break
+		}
+	}
+	if conflict.InstanceName != "Film extras" || conflict.DownloaderName != "NAS qBittorrent" || conflict.Path != "/downloads/movies/Film/extras" {
+		t.Fatalf("conflicting task details missing: %#v", conflict)
 	}
 }
 

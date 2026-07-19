@@ -87,6 +87,45 @@ function GroupDetailsLoader({ groupId, children }: { groupId: string; children: 
   )
 }
 
+function DeletePlanBlockerDetails({ blockers }: { blockers: DeletePlan['blockers'] }) {
+  const conflictingTasks = blockers.filter((blocker) => blocker.code === 'conflicting_path_occupant')
+  const otherMessages = Array.from(new Set(
+    blockers
+      .filter((blocker) => blocker.code !== 'conflicting_path_occupant')
+      .map((blocker) => formatDeleteBlocker(blocker.code, blocker.message)),
+  ))
+
+  return (
+    <Space direction="vertical" size={8} className="delete-blocker-details">
+      {otherMessages.length > 0 && <Typography.Text>{otherMessages.join('；')}</Typography.Text>}
+      {conflictingTasks.length > 0 && (
+        <div className="delete-conflict-section">
+          <Typography.Text strong>检测到 {conflictingTasks.length} 个路径冲突任务</Typography.Text>
+          <List
+            className="delete-conflict-list"
+            size="small"
+            bordered
+            dataSource={conflictingTasks}
+            renderItem={(blocker) => (
+              <List.Item key={blocker.instanceId ?? `${blocker.downloaderId}-${blocker.path}`}>
+                <Space direction="vertical" size={0} className="delete-conflict-item">
+                  <Typography.Text strong>{blocker.instanceName ?? blocker.instanceId ?? '未知任务'}</Typography.Text>
+                  <Typography.Text type="secondary">
+                    下载器：{blocker.downloaderName ?? blocker.downloaderId ?? '未知下载器'}
+                  </Typography.Text>
+                  <Typography.Text className="delete-conflict-path" copyable={Boolean(blocker.path)}>
+                    {blocker.path ?? '路径信息不可用'}
+                  </Typography.Text>
+                </Space>
+              </List.Item>
+            )}
+          />
+        </div>
+      )}
+    </Space>
+  )
+}
+
 export function TorrentGroupsPage() {
   const { message } = App.useApp()
   const queryClient = useQueryClient()
@@ -769,7 +808,7 @@ export function TorrentGroupsPage() {
               message={deletePlan.executable ? '删除计划已通过安全检查' : '当前计划不可执行'}
               description={
                 deletePlan.blockers.length
-                  ? deletePlan.blockers.map((blocker) => formatDeleteBlocker(blocker.code, blocker.message)).join('；')
+                  ? <DeletePlanBlockerDetails blockers={deletePlan.blockers} />
                   : '提交任务时服务端仍会重新校验版本、下载器在线状态和存储快照。'
               }
             />

@@ -184,7 +184,7 @@ describe('API model helpers', () => {
     expect(toDeletePlan({
       id: 'plan-1',
       selected_instance_ids: ['instance-1'],
-      executable: true,
+      executable: false,
       steps: [{
         order: 1,
         instance_id: 'instance-1',
@@ -193,10 +193,25 @@ describe('API model helpers', () => {
         data_group_id: 'data-1',
         delete_data: true,
       }],
-      blockers: [],
+      blockers: [{
+        code: 'conflicting_path_occupant',
+        message: 'conflict',
+        instance_id: 'instance-2',
+        instance_name: 'Other torrent',
+        downloader_id: 'downloader-2',
+        downloader_name: 'NAS',
+        path: '/downloads/other',
+      }],
     }, 'content-1')).toMatchObject({
-      executable: true,
+      executable: false,
       steps: [{ instanceId: 'instance-1', deleteData: true }],
+      blockers: [{
+        instanceId: 'instance-2',
+        instanceName: 'Other torrent',
+        downloaderId: 'downloader-2',
+        downloaderName: 'NAS',
+        path: '/downloads/other',
+      }],
     })
   })
 })

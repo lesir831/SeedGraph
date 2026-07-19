@@ -43,6 +43,7 @@ const (
 type TorrentInstance struct {
 	ID                  string           `json:"id"`
 	DownloaderID        string           `json:"downloader_id"`
+	DownloaderName      string           `json:"downloader_name,omitempty"`
 	ExternalKey         string           `json:"external_key"`
 	RemoteID            string           `json:"remote_id,omitempty"`
 	Name                string           `json:"name"`

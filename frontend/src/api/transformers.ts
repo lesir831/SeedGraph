@@ -183,7 +183,10 @@ export interface WireDeletePlan {
     code: string
     message: string
     instance_id?: string
+    instance_name?: string
     downloader_id?: string
+    downloader_name?: string
+    path?: string
   }> | null
 }
 
@@ -398,7 +401,10 @@ export const toDeletePlan = (wire: WireDeletePlan, groupId: string): DeletePlan 
     code: blocker.code,
     message: blocker.message,
     instanceId: blocker.instance_id,
+    instanceName: blocker.instance_name,
     downloaderId: blocker.downloader_id,
+    downloaderName: blocker.downloader_name,
+    path: blocker.path,
   })),
 })
 
