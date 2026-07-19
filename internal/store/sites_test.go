@@ -54,6 +54,20 @@ func TestTrackerIdentityRedactsHighEntropySubdomainToExactMappableIdentity(t *te
 	if pureLetters != "_redacted.tracker.example.com" {
 		t.Fatalf("16-character alphabetic token was not redacted: %q", pureLetters)
 	}
+	shortMixed, _, err := TrackerIdentity("https://abc123def456.tracker.example.com/announce")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if shortMixed != "_redacted.tracker.example.com" {
+		t.Fatalf("12-character mixed token was not redacted: %q", shortMixed)
+	}
+	shortBase32, _, err := TrackerIdentity("https://nqpxztrvkmwj.tracker.example.com/announce")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if shortBase32 != "_redacted.tracker.example.com" {
+		t.Fatalf("12-character base32-style token was not redacted: %q", shortBase32)
+	}
 
 	ordinary, _, err := TrackerIdentity("udp://tracker01.example.com:6969/announce")
 	if err != nil {

@@ -219,6 +219,37 @@ export interface UnmappedTrackerIdentity {
   lastSeenAt: string
 }
 
+export type TrackerMappingStatus = 'all' | 'mapped' | 'unmapped'
+export type TrackerMatchType = 'exact' | 'registrable_domain' | 'keyword' | 'custom'
+
+export interface TrackerMapping {
+  hostIdentity: string
+  pathHint: string
+  mapped: boolean
+  matchType?: TrackerMatchType
+  siteId?: string
+  siteName?: string
+  displayName?: string
+  instanceCount: number
+  groupCount: number
+  lastSeenAt: string
+}
+
+export interface TrackerMappingFilters {
+  query?: string
+  status: TrackerMappingStatus
+  matchType: 'all' | TrackerMatchType
+  page: number
+  pageSize: number
+}
+
+export interface IYUUSiteFilters {
+  query?: string
+  status: TrackerMappingStatus
+  page: number
+  pageSize: number
+}
+
 export interface IYUUSite {
   remoteId: number
   slug: string
@@ -228,10 +259,11 @@ export interface IYUUSite {
   cookieRequired: boolean
   lastSeenAt: string
   stale: boolean
+  mapped: boolean
+  mappingCount: number
 }
 
-export interface IYUUCatalog {
-  items: IYUUSite[]
+export interface IYUUCatalog extends PagedResponse<IYUUSite> {
   running: boolean
   nextAllowedAt?: string
   state: {

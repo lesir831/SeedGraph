@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"golang.org/x/net/publicsuffix"
 )
 
 type TrackerRule struct {
@@ -219,17 +220,18 @@ func (s *Store) DeleteCustomTrackerRule(ctx context.Context, id string) error {
 // keys are rewritten, and assignments are recalculated only when data changed.
 func (s *Store) normalizePersistedTrackerData(ctx context.Context) error {
 	return s.WithWriteTx(ctx, func(tx *sql.Tx) error {
-		rulesChanged, err := normalizePersistedTrackerRules(ctx, tx)
+		_, err := normalizePersistedTrackerRules(ctx, tx)
 		if err != nil {
 			return err
 		}
-		trackersChanged, err := normalizePersistedTorrentTrackers(ctx, tx)
+		_, err = normalizePersistedTorrentTrackers(ctx, tx)
 		if err != nil {
 			return err
 		}
-		if !rulesChanged && !trackersChanged {
-			return nil
-		}
+		// Always finish startup with a classifier pass. Migrations commit before
+		// this transaction, so relying on an in-memory "migration applied" flag
+		// would leave a crash window where backfilled catalog identities never
+		// reach existing Tracker rows on the next launch.
 		return reclassifyTorrentTrackers(ctx, tx)
 	})
 }
@@ -445,36 +447,229 @@ func normalizePersistedTorrentTrackers(ctx context.Context, tx *sql.Tx) (bool, e
 	return changed, nil
 }
 
-// reclassifyTorrentTrackers applies the same ordered rule set used by sync
-// classification to every persisted tracker identity. Callers run it in the
-// same transaction as a rule mutation so API responses never expose a rule
-// set and tracker assignments from different points in time.
+// reclassifyTorrentTrackers gives explicit tracker rules first refusal, then
+// applies the three privacy-safe IYUU catalog match levels. Every automatic
+// level must identify exactly one site; ambiguity is deliberately left
+// unmapped for an administrator to resolve.
 func reclassifyTorrentTrackers(ctx context.Context, tx *sql.Tx) error {
-	if _, err := tx.ExecContext(ctx, `
-        UPDATE torrent_trackers
-        SET site_id = (
-            SELECT r.site_id
-            FROM tracker_rules r
-            JOIN sites s ON s.id = r.site_id
-            WHERE (
-                    lower(r.host_pattern) = lower(torrent_trackers.host_identity)
-                    OR (
-                        substr(r.host_pattern, 1, 2) = '*.'
-                        AND length(torrent_trackers.host_identity) > length(r.host_pattern) - 1
-                        AND substr(
-                            lower(torrent_trackers.host_identity),
-                            length(torrent_trackers.host_identity) - length(r.host_pattern) + 2
-                        ) = substr(lower(r.host_pattern), 2)
-                    )
-                  )
-              AND (r.path_prefix = '' OR instr(torrent_trackers.path_hint, r.path_prefix) = 1)
-            ORDER BY r.priority DESC, s.display_name COLLATE NOCASE,
-                     r.host_pattern, r.path_prefix, r.id
-            LIMIT 1
-        )`); err != nil {
-		return fmt.Errorf("reclassify torrent trackers: %w", err)
+	rules, err := trackerClassificationRules(ctx, tx)
+	if err != nil {
+		return err
+	}
+	iyuuSites, err := iyuuTrackerMatchSites(ctx, tx)
+	if err != nil {
+		return err
+	}
+
+	rows, err := tx.QueryContext(ctx, `
+		SELECT instance_id, host_identity, path_hint, site_id, match_type
+		FROM torrent_trackers`)
+	if err != nil {
+		return fmt.Errorf("read torrent trackers for reclassification: %w", err)
+	}
+	type persistedClassification struct {
+		instanceID, host, path, matchType string
+		siteID                            sql.NullString
+	}
+	trackers := make([]persistedClassification, 0)
+	for rows.Next() {
+		var tracker persistedClassification
+		if err := rows.Scan(
+			&tracker.instanceID, &tracker.host, &tracker.path,
+			&tracker.siteID, &tracker.matchType,
+		); err != nil {
+			_ = rows.Close()
+			return fmt.Errorf("scan torrent tracker for reclassification: %w", err)
+		}
+		trackers = append(trackers, tracker)
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return fmt.Errorf("iterate torrent trackers for reclassification: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return fmt.Errorf("close torrent trackers for reclassification: %w", err)
+	}
+
+	for _, tracker := range trackers {
+		siteID, matchType := classifyPersistedTracker(tracker.host, tracker.path, rules, iyuuSites)
+		if tracker.siteID.Valid == (siteID != "") && tracker.siteID.String == siteID && tracker.matchType == matchType {
+			continue
+		}
+		var nullableSiteID any
+		if siteID != "" {
+			nullableSiteID = siteID
+		}
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE torrent_trackers
+			SET site_id = ?, match_type = ?
+			WHERE instance_id = ? AND host_identity = ? AND path_hint = ?`,
+			nullableSiteID, matchType, tracker.instanceID, tracker.host, tracker.path,
+		); err != nil {
+			return fmt.Errorf("reclassify torrent tracker: %w", err)
+		}
 	}
 	return nil
+}
+
+type trackerClassificationRule struct {
+	hostPattern, pathPrefix, siteID string
+}
+
+func trackerClassificationRules(ctx context.Context, tx *sql.Tx) ([]trackerClassificationRule, error) {
+	rows, err := tx.QueryContext(ctx, `
+		SELECT r.host_pattern, r.path_prefix, r.site_id
+		FROM tracker_rules r
+		JOIN sites s ON s.id = r.site_id
+		ORDER BY r.priority DESC, s.display_name COLLATE NOCASE,
+		         r.host_pattern, r.path_prefix, r.id`)
+	if err != nil {
+		return nil, fmt.Errorf("read tracker rules for reclassification: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	rules := make([]trackerClassificationRule, 0)
+	for rows.Next() {
+		var rule trackerClassificationRule
+		if err := rows.Scan(&rule.hostPattern, &rule.pathPrefix, &rule.siteID); err != nil {
+			return nil, fmt.Errorf("scan tracker rule for reclassification: %w", err)
+		}
+		rules = append(rules, rule)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate tracker rules for reclassification: %w", err)
+	}
+	return rules, nil
+}
+
+type iyuuTrackerMatchSite struct {
+	siteID, host, registrableDomain, keyword string
+}
+
+func iyuuTrackerMatchSites(ctx context.Context, tx *sql.Tx) ([]iyuuTrackerMatchSite, error) {
+	rows, err := tx.QueryContext(ctx, `
+		SELECT id, base_url
+		FROM sites
+		WHERE source = 'iyuu' AND iyuu_remote_id IS NOT NULL`)
+	if err != nil {
+		return nil, fmt.Errorf("read IYUU sites for tracker matching: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	sites := make([]iyuuTrackerMatchSite, 0)
+	for rows.Next() {
+		var site iyuuTrackerMatchSite
+		var rawHost string
+		if err := rows.Scan(&site.siteID, &rawHost); err != nil {
+			return nil, fmt.Errorf("scan IYUU site for tracker matching: %w", err)
+		}
+		host, err := normalizeTrackerHost(rawHost)
+		if err != nil || strings.HasPrefix(host, "*.") || net.ParseIP(host) != nil {
+			continue
+		}
+		registrableDomain, err := publicsuffix.EffectiveTLDPlusOne(host)
+		if err != nil {
+			continue
+		}
+		site.host = host
+		site.registrableDomain = strings.ToLower(registrableDomain)
+		site.keyword = trackerDomainKeyword(site.registrableDomain)
+		sites = append(sites, site)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate IYUU sites for tracker matching: %w", err)
+	}
+	return sites, nil
+}
+
+func classifyPersistedTracker(
+	host, pathHint string,
+	rules []trackerClassificationRule,
+	iyuuSites []iyuuTrackerMatchSite,
+) (siteID, matchType string) {
+	host = strings.ToLower(strings.TrimSpace(host))
+	for _, rule := range rules {
+		pattern := strings.ToLower(strings.TrimSpace(rule.hostPattern))
+		hostMatches := host == pattern
+		if strings.HasPrefix(pattern, "*.") {
+			suffix := strings.TrimPrefix(pattern, "*")
+			hostMatches = strings.HasSuffix(host, suffix) && host != strings.TrimPrefix(suffix, ".")
+		}
+		if !hostMatches || (rule.pathPrefix != "" && !strings.HasPrefix(pathHint, rule.pathPrefix)) {
+			continue
+		}
+		if !strings.HasPrefix(pattern, "*.") && rule.pathPrefix == "" {
+			return rule.siteID, "exact"
+		}
+		return rule.siteID, "custom"
+	}
+
+	if siteID, state := uniqueIYUUSiteMatch(iyuuSites, func(site iyuuTrackerMatchSite) bool {
+		return site.host == host
+	}); state == iyuuMatchUnique {
+		return siteID, "exact"
+	} else if state == iyuuMatchAmbiguous {
+		return "", ""
+	}
+	registrableDomain, err := publicsuffix.EffectiveTLDPlusOne(host)
+	if err != nil {
+		return "", ""
+	}
+	registrableDomain = strings.ToLower(registrableDomain)
+	if siteID, state := uniqueIYUUSiteMatch(iyuuSites, func(site iyuuTrackerMatchSite) bool {
+		return site.registrableDomain == registrableDomain
+	}); state == iyuuMatchUnique {
+		return siteID, "registrable_domain"
+	} else if state == iyuuMatchAmbiguous {
+		return "", ""
+	}
+	keyword := trackerDomainKeyword(registrableDomain)
+	if len(keyword) < 3 {
+		return "", ""
+	}
+	if siteID, state := uniqueIYUUSiteMatch(iyuuSites, func(site iyuuTrackerMatchSite) bool {
+		return len(site.keyword) >= 3 && site.keyword == keyword
+	}); state == iyuuMatchUnique {
+		return siteID, "keyword"
+	}
+	return "", ""
+}
+
+type iyuuMatchState uint8
+
+const (
+	iyuuMatchNone iyuuMatchState = iota
+	iyuuMatchUnique
+	iyuuMatchAmbiguous
+)
+
+func uniqueIYUUSiteMatch(sites []iyuuTrackerMatchSite, matches func(iyuuTrackerMatchSite) bool) (string, iyuuMatchState) {
+	matchedSite := ""
+	for _, site := range sites {
+		if !matches(site) {
+			continue
+		}
+		if matchedSite != "" && matchedSite != site.siteID {
+			return "", iyuuMatchAmbiguous
+		}
+		matchedSite = site.siteID
+	}
+	if matchedSite == "" {
+		return "", iyuuMatchNone
+	}
+	return matchedSite, iyuuMatchUnique
+}
+
+// trackerDomainKeyword strips punctuation from the registrable domain's first
+// label. Keeping the input at the eTLD+1 level prevents generic subdomains such
+// as tracker, announce, or pt from becoming the match key.
+func trackerDomainKeyword(registrableDomain string) string {
+	label, _, _ := strings.Cut(strings.ToLower(registrableDomain), ".")
+	var result strings.Builder
+	for _, character := range label {
+		if (character >= 'a' && character <= 'z') || (character >= '0' && character <= '9') {
+			result.WriteRune(character)
+		}
+	}
+	return result.String()
 }
 
 func scanTrackerRule(row scanner) (TrackerRule, error) {
@@ -554,7 +749,7 @@ func privacySafeTrackerHost(value string) (string, error) {
 	labels := strings.Split(host, ".")
 	lastSensitive := -1
 	for index, label := range labels {
-		if isSensitiveTrackerHostLabel(label) {
+		if isSensitiveTrackerHostLabel(label) || isShortTokenBeforeTrackerRole(labels, index) {
 			lastSensitive = index
 		}
 	}
@@ -580,7 +775,7 @@ func isSensitiveTrackerHostLabel(label string) bool {
 	}
 
 	compact := strings.NewReplacer("-", "", "_", "").Replace(lower)
-	if len(compact) < 16 {
+	if len(compact) < 12 {
 		return false
 	}
 	unique := make(map[rune]struct{})
@@ -600,6 +795,10 @@ func isSensitiveTrackerHostLabel(label string) bool {
 			hexOnly = false
 		}
 	}
+	if len(compact) < 16 {
+		return alphaNumeric && (digits == len(compact) ||
+			digits >= 5 && digits < len(compact) && len(unique) >= 8)
+	}
 	if !alphaNumeric {
 		return len(compact) >= 24
 	}
@@ -613,6 +812,30 @@ func isSensitiveTrackerHostLabel(label string) bool {
 		return true
 	}
 	return len(compact) >= 24 && len(unique) >= 8
+}
+
+func isShortTokenBeforeTrackerRole(labels []string, index int) bool {
+	compact := strings.NewReplacer("-", "", "_", "").Replace(strings.ToLower(strings.TrimSpace(labels[index])))
+	if len(compact) < 12 || len(compact) >= 16 {
+		return false
+	}
+	unique := make(map[rune]struct{})
+	for _, character := range compact {
+		if (character < 'a' || character > 'z') && (character < '0' || character > '9') {
+			return false
+		}
+		unique[character] = struct{}{}
+	}
+	if len(unique) < 8 {
+		return false
+	}
+	for _, label := range labels[index+1:] {
+		lower := strings.ToLower(label)
+		if strings.HasPrefix(lower, "tracker") || strings.HasPrefix(lower, "announce") {
+			return true
+		}
+	}
+	return false
 }
 
 func normalizeTrackerHost(value string) (string, error) {

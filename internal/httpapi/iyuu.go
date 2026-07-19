@@ -11,7 +11,12 @@ import (
 )
 
 func (s *Server) listSites(w http.ResponseWriter, r *http.Request) {
-	items, state, err := s.store.ListIYUUSites(r.Context())
+	query, err := iyuuSiteQuery(r)
+	if err != nil {
+		writeAPIError(w, http.StatusBadRequest, "invalid_query", err.Error())
+		return
+	}
+	items, state, total, err := s.store.ListIYUUSitesPage(r.Context(), query)
 	if err != nil {
 		s.handleError(w, r, err)
 		return
@@ -20,6 +25,9 @@ func (s *Server) listSites(w http.ResponseWriter, r *http.Request) {
 		"items":   items,
 		"state":   state,
 		"running": s.iyuu != nil && s.iyuu.Running(),
+		"total":   total,
+		"limit":   query.Limit,
+		"offset":  query.Offset,
 	}
 	if s.iyuu != nil {
 		response["next_allowed_at"] = s.iyuu.NextAllowedAt()

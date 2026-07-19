@@ -9,6 +9,7 @@ import {
   toOverview,
   toSyncStatus,
   toTorrentGroup,
+  toTrackerMapping,
   toTrackerRule,
   toUnmappedTrackerIdentity,
   type WireAuditEvent,
@@ -20,6 +21,7 @@ import {
   type WirePagedResponse,
   type WireSyncStatus,
   type WireTorrentGroup,
+  type WireTrackerMapping,
   type WireTrackerRule,
   type WireUnmappedTrackerIdentity,
 } from './transformers'
@@ -35,6 +37,7 @@ import type {
   DownloaderInput,
   GroupFilters,
 	IYUUCatalog,
+	IYUUSiteFilters,
 	IYUUSyncResult,
   LoginInput,
   MergeGroupsInput,
@@ -42,6 +45,8 @@ import type {
   PagedResponse,
   SyncStatus,
   TorrentGroup,
+  TrackerMapping,
+  TrackerMappingFilters,
   TrackerRule,
   TrackerRuleInput,
   UnmappedTrackerIdentity,
@@ -293,6 +298,17 @@ export const api = {
     ((await request<WireTrackerRule[] | null>('/tracker-rules')) ?? []).map(toTrackerRule),
   getUnmappedTrackers: async (): Promise<UnmappedTrackerIdentity[]> =>
     ((await request<WireUnmappedTrackerIdentity[] | null>('/tracker-rules/unmapped')) ?? []).map(toUnmappedTrackerIdentity),
+  getTrackerMappings: async (filters: TrackerMappingFilters): Promise<PagedResponse<TrackerMapping>> => {
+    const wire = await request<WirePagedResponse<WireTrackerMapping> | WireTrackerMapping[]>('/tracker-rules/mappings', {
+      query: {
+        q: filters.query,
+        status: filters.status === 'all' ? undefined : filters.status,
+        match_type: filters.matchType === 'all' ? undefined : filters.matchType,
+        ...getPage(filters.page, filters.pageSize),
+      },
+    })
+    return normalizeWirePage(wire, toTrackerMapping, filters.page, filters.pageSize)
+  },
   createTrackerRule: async (input: TrackerRuleInput): Promise<TrackerRule> => {
     const wire = await request<WireTrackerRule>('/tracker-rules', {
       method: 'POST',
@@ -307,7 +323,7 @@ export const api = {
   },
   deleteTrackerRule: (id: string) =>
     request<void>(`/tracker-rules/${encodeURIComponent(id)}`, { method: 'DELETE' }),
-	getIYUUSites: async (): Promise<IYUUCatalog> => {
+	getIYUUSites: async (filters: IYUUSiteFilters): Promise<IYUUCatalog> => {
 		const wire = await request<{
 			items: Array<{
 				remote_id: number
@@ -318,7 +334,12 @@ export const api = {
 				cookie_required: boolean
 				last_seen_at: string
 				stale: boolean
+				mapped: boolean
+				mapping_count: number
 			}> | null
+			total?: number
+			limit?: number
+			offset?: number
 			running: boolean
 			next_allowed_at?: string | null
 			state: {
@@ -327,7 +348,13 @@ export const api = {
 				last_error: string
 				site_count: number
 			}
-		}>('/sites')
+		}>('/sites', {
+			query: {
+				q: filters.query,
+				status: filters.status === 'all' ? undefined : filters.status,
+				...getPage(filters.page, filters.pageSize),
+			},
+		})
 		return {
 			items: (wire.items ?? []).map((site) => ({
 				remoteId: site.remote_id,
@@ -338,7 +365,12 @@ export const api = {
 				cookieRequired: site.cookie_required,
 				lastSeenAt: site.last_seen_at,
 				stale: site.stale,
+				mapped: site.mapped,
+				mappingCount: site.mapping_count,
 			})),
+			total: wire.total ?? wire.items?.length ?? 0,
+			page: Math.floor((wire.offset ?? 0) / (wire.limit ?? filters.pageSize)) + 1,
+			pageSize: wire.limit ?? filters.pageSize,
 			running: wire.running,
 			nextAllowedAt: wire.next_allowed_at ?? undefined,
 			state: {

@@ -148,6 +148,14 @@ func (s *Store) ApplySync(ctx context.Context, params ApplySyncParams) (ApplySyn
 			removed, _ := queryResult.RowsAffected()
 			result.RemovedCount += int(removed)
 		}
+		if result.ChangedCount > 0 {
+			// TrackerRecord.SiteID is only a sync-time hint based on explicit
+			// rules. Re-run the central classifier so newly inserted observations
+			// also receive IYUU exact/domain/keyword mappings and provenance.
+			if err := reclassifyTorrentTrackers(ctx, tx); err != nil {
+				return err
+			}
+		}
 
 		if _, err := tx.ExecContext(ctx, `
             UPDATE downloaders

@@ -10,6 +10,7 @@ import type {
   SyncStatus,
   TorrentGroup,
   TorrentInstance,
+  TrackerMapping,
   TrackerRule,
   UnmappedTrackerIdentity,
 } from './types'
@@ -124,6 +125,19 @@ export interface WireTrackerRule {
 export interface WireUnmappedTrackerIdentity {
   host_identity: string
   path_hint: string
+  instance_count: number
+  group_count: number
+  last_seen_at: string
+}
+
+export interface WireTrackerMapping {
+  host_identity: string
+  path_hint: string
+  mapped: boolean
+  match_type?: string
+  site_id?: string
+  site_name?: string
+  display_name?: string
   instance_count: number
   group_count: number
   last_seen_at: string
@@ -309,6 +323,22 @@ export const toTrackerRule = (wire: WireTrackerRule): TrackerRule => ({
 export const toUnmappedTrackerIdentity = (wire: WireUnmappedTrackerIdentity): UnmappedTrackerIdentity => ({
   hostIdentity: wire.host_identity,
   pathHint: wire.path_hint,
+  instanceCount: wire.instance_count,
+  groupCount: wire.group_count,
+  lastSeenAt: wire.last_seen_at,
+})
+
+export const toTrackerMapping = (wire: WireTrackerMapping): TrackerMapping => ({
+  hostIdentity: wire.host_identity,
+  pathHint: wire.path_hint,
+  mapped: wire.mapped,
+  matchType: wire.match_type === 'exact' || wire.match_type === 'registrable_domain' ||
+    wire.match_type === 'keyword' || wire.match_type === 'custom'
+    ? wire.match_type
+    : undefined,
+  siteId: wire.site_id || undefined,
+  siteName: wire.site_name || undefined,
+  displayName: wire.display_name || undefined,
   instanceCount: wire.instance_count,
   groupCount: wire.group_count,
   lastSeenAt: wire.last_seen_at,

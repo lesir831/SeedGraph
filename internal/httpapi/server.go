@@ -99,6 +99,7 @@ func (s *Server) Handler(frontend http.Handler) http.Handler {
 			protected.Post("/downloaders/{id}/test", s.testDownloader)
 			protected.Post("/downloaders/{id}/sync", s.syncDownloader)
 			protected.Get("/tracker-rules", s.listTrackerRules)
+			protected.Get("/tracker-rules/mappings", s.listTrackerMappings)
 			protected.Get("/tracker-rules/unmapped", s.listUnmappedTrackerIdentities)
 			protected.Post("/tracker-rules", s.createTrackerRule)
 			protected.Delete("/tracker-rules/{id}", s.deleteTrackerRule)
