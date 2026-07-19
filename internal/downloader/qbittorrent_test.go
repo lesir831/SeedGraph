@@ -74,9 +74,9 @@ func TestQBittorrentLoginVersionAndFullSnapshot(t *testing.T) {
 				t.Errorf("files hash = %q", request.URL.Query().Get("hash"))
 			}
 			_ = json.NewEncoder(writer).Encode([]map[string]any{
-				{"size": 10, "priority": 1},
-				{"size": 20, "priority": 0},
-				{"size": 30, "priority": 7},
+				{"name": "Ubuntu/a.iso", "size": 10, "priority": 1},
+				{"name": "Ubuntu/b.iso", "size": 20, "priority": 0},
+				{"name": "Ubuntu/c.iso", "size": 30, "priority": 7},
 			})
 		default:
 			http.NotFound(writer, request)
@@ -124,12 +124,17 @@ func TestQBittorrentLoginVersionAndFullSnapshot(t *testing.T) {
 	if !slices.Equal(torrent.TrackerURLs, []string{trackerURL, "udp://public.example:80/announce"}) {
 		t.Fatalf("trackers = %#v", torrent.TrackerURLs)
 	}
-	sizes, err := client.(FileManifestClient).SelectedFileSizes(context.Background(), torrent.Ref())
+	files, err := client.(FileManifestClient).FileManifest(context.Background(), torrent)
 	if err != nil {
-		t.Fatalf("SelectedFileSizes: %v", err)
+		t.Fatalf("FileManifest: %v", err)
 	}
-	if !slices.Equal(sizes, []int64{10, 30}) {
-		t.Fatalf("selected file sizes = %#v", sizes)
+	wantFiles := []TorrentFile{
+		{Path: "/data/Ubuntu/a.iso", Size: 10, Selected: true},
+		{Path: "/data/Ubuntu/b.iso", Size: 20, Selected: false},
+		{Path: "/data/Ubuntu/c.iso", Size: 30, Selected: true},
+	}
+	if !slices.Equal(files, wantFiles) {
+		t.Fatalf("file manifest = %#v, want %#v", files, wantFiles)
 	}
 }
 

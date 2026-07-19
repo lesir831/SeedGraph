@@ -21,6 +21,7 @@ const (
 	BlockerMissingExpectedVersion   DeleteBlockerCode = "missing_expected_version"
 	BlockerVersionConflict          DeleteBlockerCode = "version_conflict"
 	BlockerUnverifiedDataGroup      DeleteBlockerCode = "unverified_data_group"
+	BlockerFileManifestMissing      DeleteBlockerCode = "file_manifest_missing"
 	BlockerConflictingPathOccupant  DeleteBlockerCode = "conflicting_path_occupant"
 	BlockerStorageSnapshotMissing   DeleteBlockerCode = "storage_snapshot_missing"
 	BlockerStorageDownloaderOffline DeleteBlockerCode = "storage_downloader_offline"
@@ -46,13 +47,14 @@ type DeleteBlocker struct {
 // DeleteStep is ordered. A caller must stop before a delete_data step if any
 // earlier task-only step failed. At most one step per DataGroup deletes data.
 type DeleteStep struct {
-	Order          int    `json:"order"`
-	InstanceID     string `json:"instance_id"`
-	DownloaderID   string `json:"downloader_id"`
-	ExternalKey    string `json:"external_key"`
-	ContentGroupID string `json:"content_group_id"`
-	DataGroupID    string `json:"data_group_id"`
-	DeleteData     bool   `json:"delete_data"`
+	Order                   int    `json:"order"`
+	InstanceID              string `json:"instance_id"`
+	DownloaderID            string `json:"downloader_id"`
+	ExternalKey             string `json:"external_key"`
+	ContentGroupID          string `json:"content_group_id"`
+	DataGroupID             string `json:"data_group_id"`
+	DeleteData              bool   `json:"delete_data"`
+	FileManifestFingerprint string `json:"file_manifest_fingerprint,omitempty"`
 }
 
 // DeleteRequest contains the optimistic-lock state captured by the impact
@@ -96,6 +98,7 @@ func PlanDeletion(request DeleteRequest, snapshot DeletionSnapshot) DeletePlan {
 			string(blocker.Code),
 			blocker.InstanceID,
 			blocker.DownloaderID,
+			blocker.Path,
 			blocker.ContentGroupID,
 			blocker.DataGroupID,
 			strconv.FormatUint(blocker.ExpectedVersion, 10),
@@ -293,6 +296,8 @@ func PlanDeletion(request DeleteRequest, snapshot DeletionSnapshot) DeletePlan {
 		}
 
 		deleteData := len(selectedMembers) == len(activeMembers)
+		deleteOwner := selectedMembers[len(selectedMembers)-1]
+		deleteOwnerManifestFingerprint := ""
 		if deleteData {
 			if group.Confidence != ConfidenceVerified && group.Confidence != ConfidenceManual {
 				addBlocker(DeleteBlocker{
@@ -301,23 +306,37 @@ func PlanDeletion(request DeleteRequest, snapshot DeletionSnapshot) DeletePlan {
 					DataGroupID: groupID,
 				})
 			}
-			for _, occupant := range instances {
-				if !occupant.Active() || occupant.DataGroupID == groupID {
-					continue
-				}
-				if occupant.StorageID == group.StorageID && pathsOverlap(occupant.CanonicalPath, group.CanonicalPath) {
-					occupantPath := occupant.ContentPath
-					if occupantPath == "" {
-						occupantPath = occupant.CanonicalPath
+			deleteFiles, usable := canonicalFileSet(deleteOwner)
+			if !usable {
+				addBlocker(fileManifestMissingBlocker(deleteOwner, groupID))
+			} else {
+				deleteOwnerManifestFingerprint = fileManifestFingerprint(deleteOwner.Files)
+				for _, occupant := range instances {
+					if !occupant.Active() || occupant.DataGroupID == groupID || occupant.StorageID != group.StorageID {
+						continue
+					}
+
+					conflictPath := ""
+					_, occupantManifestUsable := canonicalFileSet(occupant)
+					if occupantManifestUsable {
+						conflictPath = firstConflictingFilePath(deleteFiles, occupant.Files)
+					} else if pathsOverlap(occupant.CanonicalPath, group.CanonicalPath) {
+						// Older/incomplete snapshots cannot prove that a shared directory is
+						// safe. Keep the legacy root-level guard until the next full sync
+						// records the torrent's actual files.
+						conflictPath = firstNonEmpty(occupant.ContentPath, occupant.CanonicalPath)
+					}
+					if conflictPath == "" {
+						continue
 					}
 					addBlocker(DeleteBlocker{
 						Code:           BlockerConflictingPathOccupant,
-						Message:        "another data group occupies the same physical path",
+						Message:        "another data group references a file that this deletion would remove",
 						InstanceID:     occupant.ID,
 						InstanceName:   occupant.Name,
 						DownloaderID:   occupant.DownloaderID,
 						DownloaderName: occupant.DownloaderName,
-						Path:           occupantPath,
+						Path:           conflictPath,
 						DataGroupID:    groupID,
 					})
 				}
@@ -338,6 +357,7 @@ func PlanDeletion(request DeleteRequest, snapshot DeletionSnapshot) DeletePlan {
 				DeleteData:     deleteData && index == lastIndex,
 			}
 			if step.DeleteData {
+				step.FileManifestFingerprint = deleteOwnerManifestFingerprint
 				dataDeletingSteps = append(dataDeletingSteps, step)
 			} else {
 				taskOnlySteps = append(taskOnlySteps, step)
@@ -489,6 +509,77 @@ func pathsOverlap(first, second string) bool {
 	return directoryPrefix(first, second, false) || directoryPrefix(second, first, false)
 }
 
+func canonicalFileSet(instance TorrentInstance) (map[string]struct{}, bool) {
+	if !instance.FileManifestKnown || len(instance.Files) == 0 {
+		return nil, false
+	}
+	files := make(map[string]struct{}, len(instance.Files))
+	for _, file := range instance.Files {
+		if file.CanonicalPath == "" || file.Size < 0 {
+			return nil, false
+		}
+		if _, duplicate := files[file.CanonicalPath]; duplicate {
+			return nil, false
+		}
+		files[file.CanonicalPath] = struct{}{}
+	}
+	return files, len(files) > 0
+}
+
+func firstConflictingFilePath(deleteFiles map[string]struct{}, occupantFiles []TorrentFile) string {
+	conflicts := make([]TorrentFile, 0)
+	for _, file := range occupantFiles {
+		if _, exists := deleteFiles[file.CanonicalPath]; exists {
+			conflicts = append(conflicts, file)
+		}
+	}
+	sort.Slice(conflicts, func(i, j int) bool { return conflicts[i].CanonicalPath < conflicts[j].CanonicalPath })
+	if len(conflicts) == 0 {
+		return ""
+	}
+	return firstNonEmpty(conflicts[0].SourcePath, conflicts[0].CanonicalPath)
+}
+
+func fileManifestFingerprint(files []TorrentFile) string {
+	ordered := append([]TorrentFile(nil), files...)
+	sort.Slice(ordered, func(i, j int) bool {
+		if ordered[i].CanonicalPath != ordered[j].CanonicalPath {
+			return ordered[i].CanonicalPath < ordered[j].CanonicalPath
+		}
+		if ordered[i].Size != ordered[j].Size {
+			return ordered[i].Size < ordered[j].Size
+		}
+		return !ordered[i].Selected && ordered[j].Selected
+	})
+	parts := make([]string, 0, len(ordered)*3)
+	for _, file := range ordered {
+		parts = append(parts, file.CanonicalPath, strconv.FormatInt(file.Size, 10), strconv.FormatBool(file.Selected))
+	}
+	return DeterministicID("file-manifest", parts...)
+}
+
+func fileManifestMissingBlocker(instance TorrentInstance, dataGroupID string) DeleteBlocker {
+	return DeleteBlocker{
+		Code:           BlockerFileManifestMissing,
+		Message:        "the torrent's file manifest is missing; synchronize the downloader before deleting data",
+		InstanceID:     instance.ID,
+		InstanceName:   instance.Name,
+		DownloaderID:   instance.DownloaderID,
+		DownloaderName: instance.DownloaderName,
+		Path:           firstNonEmpty(instance.ContentPath, instance.CanonicalPath),
+		DataGroupID:    dataGroupID,
+	}
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
 func sortDeleteSteps(steps []DeleteStep) {
 	sort.Slice(steps, func(i, j int) bool {
 		if steps[i].DataGroupID != steps[j].DataGroupID {
@@ -511,7 +602,7 @@ func blockerSortKey(blocker DeleteBlocker) string {
 func deletionPlanID(plan DeletePlan, request DeleteRequest) string {
 	parts := append([]string(nil), plan.SelectedInstanceIDs...)
 	for _, step := range plan.Steps {
-		parts = append(parts, fmt.Sprintf("step:%s:%t", step.InstanceID, step.DeleteData))
+		parts = append(parts, fmt.Sprintf("step:%s:%t:%s", step.InstanceID, step.DeleteData, step.FileManifestFingerprint))
 	}
 	for _, blocker := range plan.Blockers {
 		parts = append(parts, fmt.Sprintf(

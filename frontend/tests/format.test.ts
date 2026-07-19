@@ -29,6 +29,7 @@ describe('time and percentage formatters', () => {
 describe('delete blockers', () => {
   it('localizes stable blocker codes and preserves unknown messages', () => {
     expect(formatDeleteBlocker('downloader_offline', 'offline')).toContain('下载器')
+    expect(formatDeleteBlocker('file_manifest_missing', 'missing')).toContain('同步下载器')
     expect(formatDeleteBlocker('future_code', 'server explanation')).toBe('server explanation')
   })
 })

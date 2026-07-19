@@ -4,7 +4,9 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -27,6 +29,13 @@ type TrackerRecord struct {
 	SiteID       string
 }
 
+type TorrentFileRecord struct {
+	SourcePath    string
+	CanonicalPath string
+	Size          int64
+	Selected      bool
+}
+
 type TorrentRecord struct {
 	ID                  string
 	DownloaderID        string
@@ -40,6 +49,8 @@ type TorrentRecord struct {
 	WantedBytes         int64
 	ManifestFingerprint string
 	SelectedFileCount   int
+	FileManifestKnown   bool
+	Files               []TorrentFileRecord
 	MetadataFingerprint string
 	ContentGroupID      string
 	ContentGroupAutoKey string
@@ -184,6 +195,9 @@ func (s *Store) upsertTorrentTx(ctx context.Context, tx *sql.Tx, torrent Torrent
 	if torrent.Confidence == "" {
 		torrent.Confidence = "tentative"
 	}
+	if !torrent.FileManifestKnown && len(torrent.Files) != 0 {
+		return false, errors.New("torrent files require a complete file manifest")
+	}
 	addedAt := sql.NullInt64{}
 	if !torrent.AddedAt.IsZero() {
 		addedAt.Int64 = torrent.AddedAt.Unix()
@@ -246,11 +260,11 @@ func (s *Store) upsertTorrentTx(ctx context.Context, tx *sql.Tx, torrent Torrent
         INSERT INTO torrent_instances(
             id, downloader_id, stable_hash_key, remote_id, name, source_path,
             canonical_path, storage_id, wanted_bytes, manifest_fingerprint,
-            selected_file_count,
+			selected_file_count, file_manifest_known,
 			metadata_fingerprint, suggested_content_group_id, suggested_content_auto_key,
 			content_group_id, data_group_id, assignment_source,
 			added_at, first_seen_at, last_seen_at, deleted_at
-		) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'auto', COALESCE(?, ?), ?, ?, NULL)
+		) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'auto', COALESCE(?, ?), ?, ?, NULL)
         ON CONFLICT(downloader_id, stable_hash_key) DO UPDATE SET
             remote_id = excluded.remote_id,
             name = excluded.name,
@@ -258,8 +272,9 @@ func (s *Store) upsertTorrentTx(ctx context.Context, tx *sql.Tx, torrent Torrent
             canonical_path = excluded.canonical_path,
             storage_id = excluded.storage_id,
             wanted_bytes = excluded.wanted_bytes,
-            manifest_fingerprint = excluded.manifest_fingerprint,
-            selected_file_count = excluded.selected_file_count,
+			manifest_fingerprint = excluded.manifest_fingerprint,
+			selected_file_count = excluded.selected_file_count,
+			file_manifest_known = excluded.file_manifest_known,
             metadata_fingerprint = excluded.metadata_fingerprint,
             suggested_content_group_id = excluded.suggested_content_group_id,
             suggested_content_auto_key = excluded.suggested_content_auto_key,
@@ -277,10 +292,29 @@ func (s *Store) upsertTorrentTx(ctx context.Context, tx *sql.Tx, torrent Torrent
             deleted_at = NULL`,
 		torrent.ID, torrent.DownloaderID, torrent.StableHashKey, torrent.RemoteID,
 		torrent.Name, torrent.SourcePath, torrent.CanonicalPath, torrent.StorageID,
-		torrent.WantedBytes, torrent.ManifestFingerprint, torrent.SelectedFileCount, torrent.MetadataFingerprint,
+		torrent.WantedBytes, torrent.ManifestFingerprint, torrent.SelectedFileCount, boolInt(torrent.FileManifestKnown), torrent.MetadataFingerprint,
 		torrent.ContentGroupID, torrent.ContentGroupAutoKey,
 		torrent.ContentGroupID, torrent.DataGroupID, addedAt, now, now, now, addedAt); err != nil {
 		return false, fmt.Errorf("upsert torrent instance: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, "DELETE FROM torrent_files WHERE instance_id = ?", torrent.ID); err != nil {
+		return false, fmt.Errorf("replace torrent files: %w", err)
+	}
+	seenFiles := make(map[string]struct{}, len(torrent.Files))
+	for _, file := range torrent.Files {
+		if strings.TrimSpace(file.SourcePath) == "" || strings.TrimSpace(file.CanonicalPath) == "" || file.Size < 0 {
+			return false, errors.New("torrent file path and size are invalid")
+		}
+		if _, duplicate := seenFiles[file.CanonicalPath]; duplicate {
+			return false, fmt.Errorf("duplicate canonical torrent file path %q", file.CanonicalPath)
+		}
+		seenFiles[file.CanonicalPath] = struct{}{}
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO torrent_files(instance_id, source_path, canonical_path, size, selected)
+			VALUES(?, ?, ?, ?, ?)`,
+			torrent.ID, file.SourcePath, file.CanonicalPath, file.Size, boolInt(file.Selected)); err != nil {
+			return false, fmt.Errorf("insert torrent file: %w", err)
+		}
 	}
 	if _, err := tx.ExecContext(ctx, `
         INSERT INTO torrent_runtime(

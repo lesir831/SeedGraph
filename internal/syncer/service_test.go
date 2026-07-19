@@ -14,7 +14,7 @@ import (
 type fakeClient struct {
 	full          downloader.Snapshot
 	delta         downloader.Snapshot
-	manifests     map[string][]int64
+	manifests     map[string][]downloader.TorrentFile
 	manifestCalls int
 	started       chan struct{}
 	release       chan struct{}
@@ -34,9 +34,9 @@ func (f *fakeClient) Delta(ctx context.Context, _ string) (downloader.Snapshot, 
 	return f.delta, nil
 }
 func (f *fakeClient) Delete(context.Context, downloader.TorrentRef, bool) error { return nil }
-func (f *fakeClient) SelectedFileSizes(_ context.Context, torrent downloader.TorrentRef) ([]int64, error) {
+func (f *fakeClient) FileManifest(_ context.Context, torrent downloader.Torrent) ([]downloader.TorrentFile, error) {
 	f.manifestCalls++
-	return append([]int64(nil), f.manifests[torrent.StableHash]...), nil
+	return append([]downloader.TorrentFile(nil), f.manifests[torrent.StableHash]...), nil
 }
 
 func (f *fakeClient) wait(ctx context.Context) error {
@@ -85,17 +85,24 @@ func testService(t *testing.T, snapshot downloader.Snapshot) (*Service, *store.S
 
 func TestFullSyncAggregatesVerifiedCrossSeedsAndRedactsTrackers(t *testing.T) {
 	files := []int64{10, 20, 30}
+	manifest := []downloader.TorrentFile{
+		{Path: "/downloads/Example/a.mkv", Size: 10, Selected: true},
+		{Path: "/downloads/Example/b.mkv", Size: 20, Selected: true},
+		{Path: "/downloads/Example/c.mkv", Size: 30, Selected: true},
+	}
 	snapshot := downloader.Snapshot{Full: true, Torrents: []downloader.Torrent{
 		{
 			StableHash: "hash-one", Name: "Example A", ContentPath: "/downloads/Example",
 			WantedBytes: 60, SelectedFilesKnown: true, SelectedFileCount: 3,
 			SelectedFileSizes: files, State: "seeding", Progress: 1, AddedAt: time.Unix(1000, 0).UTC(),
+			FileManifestKnown: true, Files: manifest,
 			TrackerURLs: []string{"https://tracker.example.com/announce/abcdefghijklmnopqrstuvwx?passkey=secret"},
 		},
 		{
 			StableHash: "hash-two", Name: "Example B", ContentPath: "/downloads/Example",
 			WantedBytes: 60, SelectedFilesKnown: true, SelectedFileCount: 3,
 			SelectedFileSizes: files, State: "seeding", Progress: 1, AddedAt: time.Unix(2000, 0).UTC(),
+			FileManifestKnown: true, Files: manifest,
 			TrackerURLs: []string{"https://tracker.other.test/announce?token=also-secret"},
 		},
 	}}
@@ -174,7 +181,11 @@ func TestQBittorrentSingletonFetchesManifestForSafeDeletionEvidence(t *testing.T
 	service, database, item := testService(t, downloader.Snapshot{})
 	client := &fakeClient{
 		full: snapshot, delta: snapshot,
-		manifests: map[string][]int64{"hash-single": {10, 20, 30}},
+		manifests: map[string][]downloader.TorrentFile{"hash-single": {
+			{Path: "/downloads/Single/episode-01.mkv", Size: 10, Selected: true},
+			{Path: "/downloads/Single/episode-02.mkv", Size: 20, Selected: true},
+			{Path: "/downloads/Single/sample.mkv", Size: 30, Selected: true},
+		}},
 	}
 	service.SetClientFactory(func(downloader.Config) (downloader.Client, error) { return client, nil })
 
@@ -190,6 +201,22 @@ func TestQBittorrentSingletonFetchesManifestForSafeDeletionEvidence(t *testing.T
 	}
 	if total != 1 || len(groups) != 1 || groups[0].Confidence != "verified" {
 		t.Fatalf("singleton did not become verified: total=%d groups=%+v", total, groups)
+	}
+	rows, err := database.DB().Query(`SELECT source_path, canonical_path FROM torrent_files ORDER BY canonical_path`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var paths [][2]string
+	for rows.Next() {
+		var sourcePath, canonicalPath string
+		if err := rows.Scan(&sourcePath, &canonicalPath); err != nil {
+			t.Fatal(err)
+		}
+		paths = append(paths, [2]string{sourcePath, canonicalPath})
+	}
+	if len(paths) != 3 || paths[0][0] != "/downloads/Single/episode-01.mkv" || paths[0][1] != "/media/Single/episode-01.mkv" {
+		t.Fatalf("file manifest was not persisted with mapped paths: %#v", paths)
 	}
 }
 

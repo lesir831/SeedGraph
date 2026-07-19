@@ -139,7 +139,7 @@ func buildDeletionSnapshotTx(ctx context.Context, tx *sql.Tx, staleBefore time.T
 	rows, err := tx.QueryContext(ctx, `
 		SELECT ti.id, ti.downloader_id, d.name, ti.stable_hash_key, ti.remote_id, ti.name,
                ti.storage_id, ti.source_path, ti.canonical_path, ti.wanted_bytes,
-               ti.selected_file_count, ti.manifest_fingerprint, ti.content_group_id,
+		       ti.selected_file_count, ti.manifest_fingerprint, ti.file_manifest_known, ti.content_group_id,
                ti.data_group_id, ti.assignment_source, d.online,
                CASE WHEN COALESCE(d.last_success_at, 0) < ? THEN 1 ELSE 0 END,
                ti.metadata_fingerprint, COALESCE(tr.runtime_fingerprint, ''), ti.last_seen_at, ti.deleted_at
@@ -152,13 +152,13 @@ func buildDeletionSnapshotTx(ctx context.Context, tx *sql.Tx, staleBefore time.T
 	for rows.Next() {
 		var instance domain.TorrentInstance
 		var assignment string
-		var online, stale int
+		var online, stale, fileManifestKnown int
 		var lastSeen int64
 		var deleted sql.NullInt64
 		if err := rows.Scan(
 			&instance.ID, &instance.DownloaderID, &instance.DownloaderName, &instance.ExternalKey, &instance.RemoteID, &instance.Name,
 			&instance.StorageID, &instance.ContentPath, &instance.CanonicalPath, &instance.WantedBytes,
-			&instance.SelectedFileCount, &instance.FileSizeFingerprint, &instance.ContentGroupID,
+			&instance.SelectedFileCount, &instance.FileSizeFingerprint, &fileManifestKnown, &instance.ContentGroupID,
 			&instance.DataGroupID, &assignment, &online, &stale, &instance.MetadataFingerprint,
 			&instance.RuntimeFingerprint, &lastSeen, &deleted,
 		); err != nil {
@@ -167,6 +167,7 @@ func buildDeletionSnapshotTx(ctx context.Context, tx *sql.Tx, staleBefore time.T
 		}
 		instance.AssignmentSource = domain.AssignmentSource(assignment)
 		instance.SelectedFilesKnown = instance.FileSizeFingerprint != ""
+		instance.FileManifestKnown = fileManifestKnown != 0
 		instance.DownloaderOnline = online != 0
 		instance.Stale = stale != 0
 		instance.LastSeenAt = time.Unix(lastSeen, 0).UTC()
@@ -175,6 +176,36 @@ func buildDeletionSnapshotTx(ctx context.Context, tx *sql.Tx, staleBefore time.T
 			instance.DeletedAt = &value
 		}
 		snapshot.Instances = append(snapshot.Instances, instance)
+	}
+	if err := rows.Close(); err != nil {
+		return snapshot, err
+	}
+	instanceIndexes := make(map[string]int, len(snapshot.Instances))
+	for index := range snapshot.Instances {
+		instanceIndexes[snapshot.Instances[index].ID] = index
+	}
+	rows, err = tx.QueryContext(ctx, `
+		SELECT instance_id, source_path, canonical_path, size, selected
+		FROM torrent_files
+		ORDER BY instance_id, canonical_path`)
+	if err != nil {
+		return snapshot, err
+	}
+	for rows.Next() {
+		var instanceID string
+		var file domain.TorrentFile
+		var selected int
+		if err := rows.Scan(&instanceID, &file.SourcePath, &file.CanonicalPath, &file.Size, &selected); err != nil {
+			_ = rows.Close()
+			return snapshot, err
+		}
+		index, exists := instanceIndexes[instanceID]
+		if !exists {
+			_ = rows.Close()
+			return snapshot, fmt.Errorf("torrent file references unknown instance %q", instanceID)
+		}
+		file.Selected = selected != 0
+		snapshot.Instances[index].Files = append(snapshot.Instances[index].Files, file)
 	}
 	if err := rows.Close(); err != nil {
 		return snapshot, err

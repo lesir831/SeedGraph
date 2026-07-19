@@ -118,6 +118,11 @@ func newDeleteExecutionFixture(t *testing.T, count int) (*store.Store, store.Sav
 			SourcePath: "/downloads/Example", CanonicalPath: "/media/Example",
 			StorageID: downloaderRecord.StorageID, WantedBytes: 100,
 			ManifestFingerprint: fingerprint, SelectedFileCount: 1,
+			FileManifestKnown: true,
+			Files: []store.TorrentFileRecord{{
+				SourcePath: "/downloads/Example/episode-01.mkv", CanonicalPath: "/media/Example/episode-01.mkv",
+				Size: 100, Selected: true,
+			}},
 			MetadataFingerprint: "metadata-" + suffix,
 			ContentGroupID:      "content-group", ContentGroupAutoKey: "content-key",
 			DataGroupID: "data-group", DataGroupAutoKey: "data-key", Confidence: "verified",

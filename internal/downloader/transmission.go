@@ -386,7 +386,7 @@ func transmissionRecordToTorrent(record map[string]json.RawMessage) (Torrent, er
 		return Torrent{}, errors.New("transmission torrent_get: invalid added time")
 	}
 
-	selectedSizes, selectedKnown, err := transmissionSelectedFileSizes(record["files"], record["wanted"])
+	files, selectedSizes, selectedKnown, err := transmissionFileManifest(downloadDir, record["files"], record["wanted"])
 	if err != nil {
 		return Torrent{}, err
 	}
@@ -415,6 +415,8 @@ func transmissionRecordToTorrent(record map[string]json.RawMessage) (Torrent, er
 		SelectedFilesKnown: selectedKnown,
 		SelectedFileCount:  len(selectedSizes),
 		SelectedFileSizes:  selectedSizes,
+		FileManifestKnown:  selectedKnown,
+		Files:              files,
 		State:              transmissionStatus(status),
 		Progress:           progress,
 		Ratio:              ratio,
@@ -427,30 +429,37 @@ func transmissionRecordToTorrent(record map[string]json.RawMessage) (Torrent, er
 	}, nil
 }
 
-func transmissionSelectedFileSizes(filesRaw, wantedRaw json.RawMessage) ([]int64, bool, error) {
+func transmissionFileManifest(downloadDir string, filesRaw, wantedRaw json.RawMessage) ([]TorrentFile, []int64, bool, error) {
 	var files []struct {
-		Length int64 `json:"length"`
+		Name   string `json:"name"`
+		Length int64  `json:"length"`
 	}
 	if err := json.Unmarshal(filesRaw, &files); err != nil {
-		return nil, false, errors.New("transmission torrent_get: invalid files list")
+		return nil, nil, false, errors.New("transmission torrent_get: invalid files list")
 	}
 	var wanted []bool
 	if err := json.Unmarshal(wantedRaw, &wanted); err != nil {
-		return nil, false, errors.New("transmission torrent_get: invalid wanted list")
+		return nil, nil, false, errors.New("transmission torrent_get: invalid wanted list")
 	}
 	if len(files) != len(wanted) {
-		return nil, false, errors.New("transmission torrent_get: files and wanted lengths differ")
+		return nil, nil, false, errors.New("transmission torrent_get: files and wanted lengths differ")
 	}
+	manifest := make([]TorrentFile, 0, len(files))
 	selected := make([]int64, 0, len(files))
 	for index, file := range files {
 		if file.Length < 0 {
-			return nil, false, errors.New("transmission torrent_get: negative file size")
+			return nil, nil, false, errors.New("transmission torrent_get: negative file size")
 		}
+		filePath, err := torrentFilePath(downloadDir, file.Name)
+		if err != nil {
+			return nil, nil, false, errors.New("transmission torrent_get: invalid file path")
+		}
+		manifest = append(manifest, TorrentFile{Path: filePath, Size: file.Length, Selected: wanted[index]})
 		if wanted[index] {
 			selected = append(selected, file.Length)
 		}
 	}
-	return selected, true, nil
+	return manifest, selected, true, nil
 }
 
 func transmissionTrackerURLs(raw json.RawMessage) ([]string, error) {

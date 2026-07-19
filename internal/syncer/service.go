@@ -252,35 +252,35 @@ func (s *Service) normalizeSnapshot(ctx context.Context, item store.Downloader, 
 		candidates[autoKey] = append(candidates[autoKey], len(domainInstances)-1)
 	}
 	if manifestClient, ok := client.(downloader.FileManifestClient); ok {
-		// qBittorrent exposes selected files only through a per-torrent
-		// endpoint. Fetch evidence for every member returned by this snapshot,
-		// including singletons: otherwise the safe-deletion planner could never
-		// certify the last reference of a unique qBittorrent task. Normal cycles
-		// are deltas, so unchanged tasks do not incur repeated requests.
+		// qBittorrent exposes files only through a per-torrent endpoint. Fetch
+		// evidence for every member returned by this snapshot, including
+		// singletons: grouping needs sizes and safe deletion needs exact paths.
+		// Normal cycles are deltas, so unchanged tasks do not incur repeated
+		// requests.
 		for _, indexes := range candidates {
 			for _, index := range indexes {
-				if domainInstances[index].SelectedFilesKnown {
+				if domainInstances[index].FileManifestKnown {
 					continue
 				}
 				raw := byID[domainInstances[index].ID]
-				sizes, err := manifestClient.SelectedFileSizes(ctx, raw.Ref())
+				files, err := manifestClient.FileManifest(ctx, raw)
 				if err != nil {
 					s.logger.Warn("file manifest unavailable; group remains tentative",
 						"downloader_id", item.ID, "torrent_hash", raw.StableHash, "error", safeError(err))
 					continue
 				}
+				sizes := selectedFileSizes(files)
 				raw.SelectedFilesKnown = true
 				raw.SelectedFileCount = len(sizes)
 				raw.SelectedFileSizes = sizes
+				raw.FileManifestKnown = true
+				raw.Files = append([]downloader.TorrentFile(nil), files...)
 				byID[domainInstances[index].ID] = raw
-				fingerprint, err := domain.SelectedFileSizeFingerprint(sizes)
+				normalized, err := normalizeTorrent(item, raw)
 				if err != nil {
 					return nil, err
 				}
-				domainInstances[index].SelectedFilesKnown = true
-				domainInstances[index].SelectedFileCount = len(sizes)
-				domainInstances[index].SelectedFileSizes = append([]int64(nil), sizes...)
-				domainInstances[index].FileSizeFingerprint = fingerprint
+				domainInstances[index] = normalized
 			}
 		}
 	}
@@ -312,7 +312,8 @@ func (s *Service) normalizeSnapshot(ctx context.Context, item store.Downloader, 
 			Hash, Name, Path, Storage, Manifest string
 			Bytes                               int64
 			Trackers                            []store.TrackerRecord
-		}{raw.StableHash, raw.Name, instance.CanonicalPath, instance.StorageID, instance.FileSizeFingerprint, instance.WantedBytes, trackers})
+			Files                               []domain.TorrentFile
+		}{raw.StableHash, raw.Name, instance.CanonicalPath, instance.StorageID, instance.FileSizeFingerprint, instance.WantedBytes, trackers, instance.Files})
 		runtime := store.RuntimeRecord{
 			Status: raw.State, Progress: raw.Progress, Ratio: raw.Ratio,
 			UploadedBytes: raw.UploadedBytes, DownloadedBytes: raw.DownloadedBytes,
@@ -326,6 +327,8 @@ func (s *Service) normalizeSnapshot(ctx context.Context, item store.Downloader, 
 			AddedAt:     raw.AddedAt,
 			WantedBytes: instance.WantedBytes, ManifestFingerprint: instance.FileSizeFingerprint,
 			SelectedFileCount:   instance.SelectedFileCount,
+			FileManifestKnown:   instance.FileManifestKnown,
+			Files:               storeFileRecords(instance.Files),
 			MetadataFingerprint: metadataFingerprint,
 			ContentGroupID:      membership.ContentGroupID, ContentGroupAutoKey: contentGroup.AutoKey,
 			DataGroupID: membership.DataGroupID, DataGroupAutoKey: dataGroup.PhysicalKey,
@@ -348,26 +351,37 @@ func (s *Service) DeleteRemote(ctx context.Context, downloaderID string, ref dow
 }
 
 func normalizeTorrent(item store.Downloader, raw downloader.Torrent) (domain.TorrentInstance, error) {
-	location := domain.CanonicalLocation{}
-	var err error
-	if len(item.PathMappings) == 0 {
-		location, err = domain.CanonicalizeContentPath(item.StorageID, raw.ContentPath)
-	} else {
-		mappings := make([]domain.PathMapping, 0, len(item.PathMappings))
-		for _, mapping := range item.PathMappings {
-			mappings = append(mappings, domain.PathMapping{
-				ID: mapping.ID, DownloaderID: item.ID, StorageID: item.StorageID,
-				SourcePrefix: mapping.SourcePrefix, TargetPrefix: mapping.TargetPrefix,
-			})
-		}
-		location, err = domain.ApplyPathMappings(item.ID, raw.ContentPath, mappings)
-	}
+	location, err := canonicalizeDownloaderPath(item, raw.ContentPath)
 	if err != nil {
 		return domain.TorrentInstance{}, err
 	}
+	files := make([]domain.TorrentFile, 0, len(raw.Files))
+	if raw.FileManifestKnown {
+		for _, file := range raw.Files {
+			if file.Size < 0 {
+				return domain.TorrentInstance{}, fmt.Errorf("invalid file size %d", file.Size)
+			}
+			fileLocation, err := canonicalizeDownloaderPath(item, file.Path)
+			if err != nil {
+				return domain.TorrentInstance{}, fmt.Errorf("normalize file %q: %w", file.Path, err)
+			}
+			if fileLocation.StorageID != location.StorageID {
+				return domain.TorrentInstance{}, fmt.Errorf("file %q maps to storage %q instead of %q", file.Path, fileLocation.StorageID, location.StorageID)
+			}
+			files = append(files, domain.TorrentFile{
+				SourcePath: file.Path, CanonicalPath: fileLocation.Path,
+				Size: file.Size, Selected: file.Selected,
+			})
+		}
+		sort.Slice(files, func(i, j int) bool { return files[i].CanonicalPath < files[j].CanonicalPath })
+	}
+	selectedSizes := append([]int64(nil), raw.SelectedFileSizes...)
+	if raw.FileManifestKnown {
+		selectedSizes = selectedDomainFileSizes(files)
+	}
 	manifest := ""
-	if raw.SelectedFilesKnown {
-		manifest, err = domain.SelectedFileSizeFingerprint(raw.SelectedFileSizes)
+	if raw.SelectedFilesKnown || raw.FileManifestKnown {
+		manifest, err = domain.SelectedFileSizeFingerprint(selectedSizes)
 		if err != nil {
 			return domain.TorrentInstance{}, err
 		}
@@ -377,10 +391,56 @@ func normalizeTorrent(item store.Downloader, raw downloader.Torrent) (domain.Tor
 		DownloaderID: item.ID, ExternalKey: raw.StableHash, RemoteID: raw.RemoteID,
 		Name: raw.Name, StorageID: location.StorageID, ContentPath: raw.ContentPath,
 		CanonicalPath: location.Path, WantedBytes: raw.WantedBytes,
-		SelectedFilesKnown: raw.SelectedFilesKnown, SelectedFileCount: raw.SelectedFileCount,
-		SelectedFileSizes: append([]int64(nil), raw.SelectedFileSizes...), FileSizeFingerprint: manifest,
+		SelectedFilesKnown: raw.SelectedFilesKnown || raw.FileManifestKnown, SelectedFileCount: len(selectedSizes),
+		SelectedFileSizes: selectedSizes, FileSizeFingerprint: manifest,
+		FileManifestKnown: raw.FileManifestKnown, Files: files,
 		AssignmentSource: domain.AssignmentAuto, DownloaderOnline: true,
 	}, nil
+}
+
+func canonicalizeDownloaderPath(item store.Downloader, rawPath string) (domain.CanonicalLocation, error) {
+	if len(item.PathMappings) == 0 {
+		return domain.CanonicalizeContentPath(item.StorageID, rawPath)
+	}
+	mappings := make([]domain.PathMapping, 0, len(item.PathMappings))
+	for _, mapping := range item.PathMappings {
+		mappings = append(mappings, domain.PathMapping{
+			ID: mapping.ID, DownloaderID: item.ID, StorageID: item.StorageID,
+			SourcePrefix: mapping.SourcePrefix, TargetPrefix: mapping.TargetPrefix,
+		})
+	}
+	return domain.ApplyPathMappings(item.ID, rawPath, mappings)
+}
+
+func selectedFileSizes(files []downloader.TorrentFile) []int64 {
+	result := make([]int64, 0, len(files))
+	for _, file := range files {
+		if file.Selected {
+			result = append(result, file.Size)
+		}
+	}
+	return result
+}
+
+func selectedDomainFileSizes(files []domain.TorrentFile) []int64 {
+	result := make([]int64, 0, len(files))
+	for _, file := range files {
+		if file.Selected {
+			result = append(result, file.Size)
+		}
+	}
+	return result
+}
+
+func storeFileRecords(files []domain.TorrentFile) []store.TorrentFileRecord {
+	result := make([]store.TorrentFileRecord, 0, len(files))
+	for _, file := range files {
+		result = append(result, store.TorrentFileRecord{
+			SourcePath: file.SourcePath, CanonicalPath: file.CanonicalPath,
+			Size: file.Size, Selected: file.Selected,
+		})
+	}
+	return result
 }
 
 func classifyTrackers(rawURLs []string, rules []store.TrackerRule) []store.TrackerRecord {

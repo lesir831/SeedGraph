@@ -100,7 +100,7 @@ function DeletePlanBlockerDetails({ blockers }: { blockers: DeletePlan['blockers
       {otherMessages.length > 0 && <Typography.Text>{otherMessages.join('；')}</Typography.Text>}
       {conflictingTasks.length > 0 && (
         <div className="delete-conflict-section">
-          <Typography.Text strong>检测到 {conflictingTasks.length} 个路径冲突任务</Typography.Text>
+          <Typography.Text strong>检测到 {conflictingTasks.length} 个文件冲突任务</Typography.Text>
           <List
             className="delete-conflict-list"
             size="small"

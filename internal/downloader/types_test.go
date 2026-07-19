@@ -26,3 +26,16 @@ func TestDeleteRequiresStableHash(t *testing.T) {
 		}
 	}
 }
+
+func TestTorrentFilePathStaysInsideDownloadDirectory(t *testing.T) {
+	t.Parallel()
+	path, err := torrentFilePath(`/downloads/show`, `Season 01\\Episode 01.mkv`)
+	if err != nil || path != "/downloads/show/Season 01/Episode 01.mkv" {
+		t.Fatalf("torrentFilePath() = %q, %v", path, err)
+	}
+	for _, name := range []string{"", ".", "..", "../secret", "/etc/passwd", `C:\\Windows\\secret`} {
+		if _, err := torrentFilePath("/downloads/show", name); err == nil {
+			t.Fatalf("torrentFilePath accepted unsafe file name %q", name)
+		}
+	}
+}

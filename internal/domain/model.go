@@ -55,6 +55,8 @@ type TorrentInstance struct {
 	SelectedFileCount   int              `json:"selected_file_count"`
 	SelectedFileSizes   []int64          `json:"selected_file_sizes,omitempty"`
 	FileSizeFingerprint string           `json:"file_size_fingerprint,omitempty"`
+	FileManifestKnown   bool             `json:"file_manifest_known"`
+	Files               []TorrentFile    `json:"files,omitempty"`
 	ContentGroupID      string           `json:"content_group_id,omitempty"`
 	DataGroupID         string           `json:"data_group_id,omitempty"`
 	AssignmentSource    AssignmentSource `json:"assignment_source,omitempty"`
@@ -65,6 +67,16 @@ type TorrentInstance struct {
 	RuntimeFingerprint  string           `json:"runtime_fingerprint,omitempty"`
 	LastSeenAt          time.Time        `json:"last_seen_at,omitempty"`
 	DeletedAt           *time.Time       `json:"deleted_at,omitempty"`
+}
+
+// TorrentFile records one physical file that a downloader associates with a
+// torrent. SourcePath is downloader-visible; CanonicalPath is comparable only
+// with files on the same StorageID as the parent TorrentInstance.
+type TorrentFile struct {
+	SourcePath    string `json:"source_path"`
+	CanonicalPath string `json:"canonical_path"`
+	Size          int64  `json:"size"`
+	Selected      bool   `json:"selected"`
 }
 
 // Active reports whether the task is currently present in its downloader's

@@ -129,6 +129,14 @@ func TestTransmissionFullSnapshotParsesTableAndWantedFiles(t *testing.T) {
 	if !slices.Equal(torrent.SelectedFileSizes, []int64{10, 30}) {
 		t.Fatalf("selected sizes = %#v", torrent.SelectedFileSizes)
 	}
+	wantFiles := []TorrentFile{
+		{Path: "/downloads/a", Size: 10, Selected: true},
+		{Path: "/downloads/b", Size: 20, Selected: false},
+		{Path: "/downloads/c", Size: 30, Selected: true},
+	}
+	if !torrent.FileManifestKnown || !slices.Equal(torrent.Files, wantFiles) {
+		t.Fatalf("file manifest = %#v, want %#v", torrent.Files, wantFiles)
+	}
 	if torrent.ContentPath != "/downloads/Linux ISO" || torrent.State != "downloading" {
 		t.Fatalf("path/state = %+v", torrent)
 	}
@@ -364,7 +372,7 @@ func transmissionTestTable(hash string, id int) ([]string, []any) {
 	}
 	row := []any{
 		id, hash, "Torrent", "/data", 5, 1.0, 2.0,
-		2, 5, 0, 0, 6, 1712345678, []map[string]any{{"length": 5}}, []bool{true}, []map[string]any{},
+		2, 5, 0, 0, 6, 1712345678, []map[string]any{{"name": "Torrent", "length": 5}}, []bool{true}, []map[string]any{},
 	}
 	return header, row
 }

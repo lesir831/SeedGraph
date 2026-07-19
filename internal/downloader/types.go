@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"path"
 	"strings"
 	"time"
 )
@@ -62,11 +63,18 @@ type Client interface {
 }
 
 // FileManifestClient is an optional capability for clients whose ordinary
-// torrent snapshot omits selected-file sizes. qBittorrent 5.2 requires a
-// per-torrent files request, while Transmission includes this data in
-// torrent_get.
+// torrent snapshot omits its file manifest. qBittorrent requires a per-torrent
+// files request, while Transmission includes this data in torrent_get.
 type FileManifestClient interface {
-	SelectedFileSizes(ctx context.Context, torrent TorrentRef) ([]int64, error)
+	FileManifest(ctx context.Context, torrent Torrent) ([]TorrentFile, error)
+}
+
+// TorrentFile is one downloader-visible file owned by a torrent. Path is an
+// absolute path in that downloader's filesystem namespace.
+type TorrentFile struct {
+	Path     string
+	Size     int64
+	Selected bool
 }
 
 // TorrentRef identifies one torrent for a remote mutation. StableHash is the
@@ -98,6 +106,8 @@ type Torrent struct {
 	SelectedFilesKnown bool
 	SelectedFileCount  int
 	SelectedFileSizes  []int64
+	FileManifestKnown  bool
+	Files              []TorrentFile
 	State              string
 	Progress           float64
 	Ratio              float64
@@ -107,6 +117,26 @@ type Torrent struct {
 	DownloadSpeed      int64
 	AddedAt            time.Time
 	TrackerURLs        []string
+}
+
+func torrentFilePath(directory, name string) (string, error) {
+	if strings.TrimSpace(directory) == "" || strings.TrimSpace(name) == "" ||
+		strings.IndexByte(name, 0) >= 0 {
+		return "", errors.New("invalid torrent file path")
+	}
+	normalized := strings.ReplaceAll(name, `\`, "/")
+	cleaned := path.Clean(normalized)
+	if cleaned == "." || cleaned == ".." || strings.HasPrefix(cleaned, "../") ||
+		strings.HasPrefix(cleaned, "/") || isWindowsAbsolutePath(cleaned) {
+		return "", errors.New("invalid torrent file path")
+	}
+	return joinRemotePath(directory, cleaned), nil
+}
+
+func isWindowsAbsolutePath(value string) bool {
+	return len(value) >= 3 &&
+		((value[0] >= 'a' && value[0] <= 'z') || (value[0] >= 'A' && value[0] <= 'Z')) &&
+		value[1] == ':' && value[2] == '/'
 }
 
 // Ref returns the mutation reference for t.

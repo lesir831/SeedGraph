@@ -181,7 +181,7 @@ func (client *qbittorrentClient) Delete(ctx context.Context, torrent TorrentRef,
 	return nil
 }
 
-func (client *qbittorrentClient) SelectedFileSizes(ctx context.Context, torrent TorrentRef) ([]int64, error) {
+func (client *qbittorrentClient) FileManifest(ctx context.Context, torrent Torrent) ([]TorrentFile, error) {
 	hash, err := normalizeStableHash(torrent.StableHash)
 	if err != nil {
 		return nil, fmt.Errorf("qbittorrent files: %w", err)
@@ -197,20 +197,25 @@ func (client *qbittorrentClient) SelectedFileSizes(ctx context.Context, torrent 
 		return nil, unexpectedStatus("qbittorrent files", response.StatusCode)
 	}
 	var files []struct {
-		Size     int64 `json:"size"`
-		Priority int   `json:"priority"`
+		Name     string `json:"name"`
+		Size     int64  `json:"size"`
+		Priority int    `json:"priority"`
 	}
 	if err := decodeJSONResponse(response, &files, "qbittorrent files"); err != nil {
 		return nil, err
 	}
-	sizes := make([]int64, 0, len(files))
+	manifest := make([]TorrentFile, 0, len(files))
 	for _, file := range files {
-		if file.Priority == 0 {
-			continue
+		if file.Size < 0 {
+			return nil, errors.New("qbittorrent files: negative file size")
 		}
-		sizes = append(sizes, maxInt64(file.Size, 0))
+		filePath, err := torrentFilePath(torrent.SavePath, file.Name)
+		if err != nil {
+			return nil, errors.New("qbittorrent files: invalid file path")
+		}
+		manifest = append(manifest, TorrentFile{Path: filePath, Size: file.Size, Selected: file.Priority != 0})
 	}
-	return sizes, nil
+	return manifest, nil
 }
 
 func (client *qbittorrentClient) fetchTorrentInfo(ctx context.Context, hashes []string) ([]Torrent, error) {

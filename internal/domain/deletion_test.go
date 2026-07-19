@@ -15,30 +15,50 @@ func deletionFixture(confidence GroupConfidence) DeletionSnapshot {
 		{
 			ID:                  "a",
 			DownloaderID:        "qb",
+			DownloaderName:      "qBittorrent",
 			ExternalKey:         "hash-a",
+			Name:                "Film episode 01",
 			StorageID:           "media",
+			ContentPath:         "/downloads/Film",
 			CanonicalPath:       "/movies/Film",
 			WantedBytes:         100,
 			SelectedFilesKnown:  true,
 			SelectedFileCount:   1,
 			FileSizeFingerprint: fingerprint,
-			ContentGroupID:      "cg",
-			DataGroupID:         "dg",
-			DownloaderOnline:    true,
+			FileManifestKnown:   true,
+			Files: []TorrentFile{{
+				SourcePath:    "/downloads/Film/episode-01.mkv",
+				CanonicalPath: "/movies/Film/episode-01.mkv",
+				Size:          100,
+				Selected:      true,
+			}},
+			ContentGroupID:   "cg",
+			DataGroupID:      "dg",
+			DownloaderOnline: true,
 		},
 		{
 			ID:                  "b",
 			DownloaderID:        "tr",
+			DownloaderName:      "Transmission",
 			ExternalKey:         "hash-b",
+			Name:                "Film episode 01",
 			StorageID:           "media",
+			ContentPath:         "/data/Film",
 			CanonicalPath:       "/movies/Film",
 			WantedBytes:         100,
 			SelectedFilesKnown:  true,
 			SelectedFileCount:   1,
 			FileSizeFingerprint: fingerprint,
-			ContentGroupID:      "cg",
-			DataGroupID:         "dg",
-			DownloaderOnline:    true,
+			FileManifestKnown:   true,
+			Files: []TorrentFile{{
+				SourcePath:    "/data/Film/episode-01.mkv",
+				CanonicalPath: "/movies/Film/episode-01.mkv",
+				Size:          100,
+				Selected:      true,
+			}},
+			ContentGroupID:   "cg",
+			DataGroupID:      "dg",
+			DownloaderOnline: true,
 		},
 	}
 	return DeletionSnapshot{
@@ -117,6 +137,9 @@ func TestPlanDeletionDeletesDataExactlyOnceAndLast(t *testing.T) {
 	}
 	if plan.Steps[0].Order != 1 || plan.Steps[1].Order != 2 {
 		t.Fatalf("unexpected step order: %#v", plan.Steps)
+	}
+	if plan.Steps[1].FileManifestFingerprint == "" {
+		t.Fatal("file-deleting step does not capture its file manifest")
 	}
 }
 
@@ -210,22 +233,29 @@ func TestPlanDeletionBlocksConflictingPhysicalPath(t *testing.T) {
 	t.Parallel()
 	snapshot := deletionFixture(ConfidenceVerified)
 	snapshot.Instances = append(snapshot.Instances, TorrentInstance{
-		ID:               "occupant",
-		DownloaderID:     "qb",
-		DownloaderName:   "NAS qBittorrent",
-		ExternalKey:      "hash-occupant",
-		Name:             "Film extras",
-		StorageID:        "media",
-		ContentPath:      "/downloads/movies/Film/extras",
-		CanonicalPath:    "/movies/Film/extras",
-		WantedBytes:      101,
+		ID:                "occupant",
+		DownloaderID:      "qb",
+		DownloaderName:    "NAS qBittorrent",
+		ExternalKey:       "hash-occupant",
+		Name:              "Film extras",
+		StorageID:         "media",
+		ContentPath:       "/downloads/movies/Film",
+		CanonicalPath:     "/movies/Film",
+		WantedBytes:       101,
+		FileManifestKnown: true,
+		Files: []TorrentFile{{
+			SourcePath:    "/downloads/movies/Film/episode-01.mkv",
+			CanonicalPath: "/movies/Film/episode-01.mkv",
+			Size:          100,
+			Selected:      true,
+		}},
 		ContentGroupID:   "cg-other",
 		DataGroupID:      "dg-other",
 		DownloaderOnline: true,
 	})
 	snapshot.ContentGroups = append(snapshot.ContentGroups, ContentGroup{ID: "cg-other", Version: 1})
 	snapshot.DataGroups = append(snapshot.DataGroups, DataGroup{
-		ID: "dg-other", Version: 1, StorageID: "media", CanonicalPath: "/movies/Film/extras", WantedBytes: 101,
+		ID: "dg-other", Version: 1, StorageID: "media", CanonicalPath: "/movies/Film", WantedBytes: 101,
 		Confidence: ConfidenceVerified,
 	})
 
@@ -240,8 +270,42 @@ func TestPlanDeletionBlocksConflictingPhysicalPath(t *testing.T) {
 			break
 		}
 	}
-	if conflict.InstanceName != "Film extras" || conflict.DownloaderName != "NAS qBittorrent" || conflict.Path != "/downloads/movies/Film/extras" {
+	if conflict.InstanceName != "Film extras" || conflict.DownloaderName != "NAS qBittorrent" || conflict.Path != "/downloads/movies/Film/episode-01.mkv" {
 		t.Fatalf("conflicting task details missing: %#v", conflict)
+	}
+}
+
+func TestPlanDeletionAllowsDifferentEpisodeFilesInSharedDirectory(t *testing.T) {
+	t.Parallel()
+	snapshot := deletionFixture(ConfidenceVerified)
+	snapshot.Instances = append(snapshot.Instances, TorrentInstance{
+		ID: "episode-02", DownloaderID: "tr", ExternalKey: "hash-episode-02", Name: "Film episode 02",
+		StorageID: "media", ContentPath: "/data/Film", CanonicalPath: "/movies/Film", WantedBytes: 101,
+		FileManifestKnown: true,
+		Files: []TorrentFile{{
+			SourcePath:    "/data/Film/episode-02.mkv",
+			CanonicalPath: "/movies/Film/episode-02.mkv",
+			Size:          101,
+			Selected:      true,
+		}},
+		ContentGroupID: "cg-episode-02", DataGroupID: "dg-episode-02", DownloaderOnline: true,
+	})
+
+	plan := PlanDeletion(deleteRequest("a", "b"), snapshot)
+	if !plan.Executable {
+		t.Fatalf("different episode in the same directory blocked deletion: %#v", plan.Blockers)
+	}
+}
+
+func TestPlanDeletionBlocksWhenDeletingTorrentFileManifestIsMissing(t *testing.T) {
+	t.Parallel()
+	snapshot := deletionFixture(ConfidenceVerified)
+	snapshot.Instances[1].FileManifestKnown = false
+	snapshot.Instances[1].Files = nil
+
+	plan := PlanDeletion(deleteRequest("a", "b"), snapshot)
+	if plan.Executable || !hasBlocker(plan, BlockerFileManifestMissing) {
+		t.Fatalf("missing delete-owner file manifest was not blocked: %#v", plan)
 	}
 }
 
@@ -255,6 +319,7 @@ func TestPlanDeletionAllTaskOnlyStepsPrecedeEveryFileDelete(t *testing.T) {
 	snapshot.Instances = append(snapshot.Instances, TorrentInstance{
 		ID: "c", DownloaderID: "qb", ExternalKey: "hash-c", StorageID: "other", CanonicalPath: "/c", WantedBytes: 1,
 		SelectedFilesKnown: true, SelectedFileCount: 1, FileSizeFingerprint: fingerprint,
+		FileManifestKnown: true, Files: []TorrentFile{{SourcePath: "/c", CanonicalPath: "/c", Size: 1, Selected: true}},
 		ContentGroupID: "cg2", DataGroupID: "dg2", DownloaderOnline: true,
 	})
 	snapshot.ContentGroups = append(snapshot.ContentGroups, ContentGroup{ID: "cg2", Version: 1})
@@ -379,6 +444,21 @@ func TestPlanDeletionDeterministicAndDeduplicatesSelection(t *testing.T) {
 	second := PlanDeletion(deleteRequest("a", "b"), snapshot)
 	if first.ID != second.ID || !reflect.DeepEqual(first.Steps, second.Steps) {
 		t.Fatalf("plan changed with duplicate/order: first=%#v second=%#v", first, second)
+	}
+}
+
+func TestPlanDeletionIDChangesWhenDeletingFileManifestChanges(t *testing.T) {
+	t.Parallel()
+	snapshot := deletionFixture(ConfidenceVerified)
+	first := PlanDeletion(deleteRequest("a", "b"), snapshot)
+	snapshot.Instances[1].Files[0].SourcePath = "/data/Film/episode-02.mkv"
+	snapshot.Instances[1].Files[0].CanonicalPath = "/movies/Film/episode-02.mkv"
+	second := PlanDeletion(deleteRequest("a", "b"), snapshot)
+	if !first.Executable || !second.Executable {
+		t.Fatalf("test plans unexpectedly blocked: first=%#v second=%#v", first.Blockers, second.Blockers)
+	}
+	if first.ID == second.ID {
+		t.Fatal("delete plan ID ignored a changed file manifest")
 	}
 }
 
