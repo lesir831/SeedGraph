@@ -1,4 +1,4 @@
-import { DeleteOutlined, PlusOutlined, ReloadOutlined, TagsOutlined } from '@ant-design/icons'
+import { DeleteOutlined, LinkOutlined, PlusOutlined, ReloadOutlined, TagsOutlined } from '@ant-design/icons'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   Alert,
@@ -17,7 +17,7 @@ import {
 } from 'antd'
 import { useState } from 'react'
 import { api } from '../api/client'
-import type { IYUUSite, TrackerRule, TrackerRuleInput } from '../api/types'
+import type { IYUUSite, TrackerRule, TrackerRuleInput, UnmappedTrackerIdentity } from '../api/types'
 import { PageHeader } from '../components/PageHeader'
 import { PageState } from '../components/PageState'
 import { displayError, formatDateTime } from '../utils/format'
@@ -36,15 +36,30 @@ export function TrackerRulesPage() {
   const [form] = Form.useForm<TrackerRuleInput>()
 
   const rules = useQuery({ queryKey: ['tracker-rules'], queryFn: api.getTrackerRules })
+  const unmappedTrackers = useQuery({ queryKey: ['tracker-rules', 'unmapped'], queryFn: api.getUnmappedTrackers })
   const iyuuCatalog = useQuery({ queryKey: ['iyuu-sites'], queryFn: api.getIYUUSites })
+
+  const openRuleModal = (tracker?: UnmappedTrackerIdentity) => {
+    form.setFieldsValue(tracker ? {
+      ...initialValues,
+      hostPattern: tracker.hostIdentity,
+      pathPrefix: tracker.pathHint,
+    } : initialValues)
+    setModalOpen(true)
+  }
 
   const createMutation = useMutation({
     mutationFn: api.createTrackerRule,
     onSuccess: async () => {
-      void message.success('Tracker 规则已添加')
+      void message.success('Tracker 规则已添加，已有任务已重新映射')
       setModalOpen(false)
       form.resetFields()
-      await queryClient.invalidateQueries({ queryKey: ['tracker-rules'] })
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['tracker-rules'] }),
+        queryClient.invalidateQueries({ queryKey: ['torrent-groups'] }),
+        queryClient.invalidateQueries({ queryKey: ['torrent-group'] }),
+        queryClient.invalidateQueries({ queryKey: ['overview'] }),
+      ])
     },
     onError: (error) => void message.error(displayError(error)),
   })
@@ -52,8 +67,13 @@ export function TrackerRulesPage() {
   const deleteMutation = useMutation({
     mutationFn: api.deleteTrackerRule,
     onSuccess: async () => {
-      void message.success('规则已删除')
-      await queryClient.invalidateQueries({ queryKey: ['tracker-rules'] })
+      void message.success('规则已删除，已有任务已重新映射')
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['tracker-rules'] }),
+        queryClient.invalidateQueries({ queryKey: ['torrent-groups'] }),
+        queryClient.invalidateQueries({ queryKey: ['torrent-group'] }),
+        queryClient.invalidateQueries({ queryKey: ['overview'] }),
+      ])
     },
     onError: (error) => void message.error(displayError(error)),
   })
@@ -174,6 +194,48 @@ export function TrackerRulesPage() {
     },
   ]
 
+  const unmappedColumns: TableColumnsType<UnmappedTrackerIdentity> = [
+    {
+      title: '脱敏 Tracker 身份',
+      key: 'identity',
+      render: (_, tracker) => {
+        const identity = `${tracker.hostIdentity}${tracker.pathHint}`
+        return (
+          <div className="primary-cell tracker-identity-cell">
+            <Typography.Text code copyable={{ text: identity }}>{tracker.hostIdentity}</Typography.Text>
+            <Typography.Text type="secondary">{tracker.pathHint || '任意路径'}</Typography.Text>
+          </div>
+        )
+      },
+    },
+    {
+      title: '影响范围',
+      key: 'usage',
+      width: 210,
+      render: (_, tracker) => (
+        <Space wrap size={4}>
+          <Tag color="blue">{tracker.instanceCount} 个实例</Tag>
+          <Tag>{tracker.groupCount} 个聚合组</Tag>
+        </Space>
+      ),
+    },
+    {
+      title: '最近发现',
+      dataIndex: 'lastSeenAt',
+      width: 180,
+      render: formatDateTime,
+    },
+    {
+      title: '操作',
+      key: 'actions',
+      width: 130,
+      fixed: 'right',
+      render: (_, tracker) => (
+        <Button type="link" icon={<LinkOutlined />} onClick={() => openRuleModal(tracker)}>创建映射</Button>
+      ),
+    },
+  ]
+
   return (
     <div className="page-stack">
       <PageHeader
@@ -181,7 +243,12 @@ export function TrackerRulesPage() {
         description="将脱敏后的 Tracker 主机和静态路径映射为统一站点；完整 announce URL 和 passkey 不会保存。"
         extra={
           <>
-            <Button icon={<ReloadOutlined spin={rules.isFetching} />} onClick={() => void rules.refetch()}>刷新</Button>
+            <Button
+              icon={<ReloadOutlined spin={rules.isFetching || unmappedTrackers.isFetching} />}
+              onClick={() => void Promise.all([rules.refetch(), unmappedTrackers.refetch()])}
+            >
+              刷新
+            </Button>
             <Button
               icon={<ReloadOutlined spin={iyuuSyncMutation.isPending || iyuuCatalog.data?.running} />}
               loading={iyuuSyncMutation.isPending}
@@ -189,7 +256,7 @@ export function TrackerRulesPage() {
             >
               同步 IYUU 目录
             </Button>
-            <Button type="primary" icon={<PlusOutlined />} onClick={() => setModalOpen(true)}>添加规则</Button>
+            <Button type="primary" icon={<PlusOutlined />} onClick={() => openRuleModal()}>添加规则</Button>
           </>
         }
       />
@@ -200,6 +267,29 @@ export function TrackerRulesPage() {
         message="规则按优先级依次匹配"
         description="先匹配主机名，再用可选的静态路径前缀区分同域名站点。IYUU 目录只提供站点网站元数据，不等同于 Tracker announce 域名，因此不会自动生成权威匹配规则。"
       />
+
+      <Card
+        title={<Space size={8}><span>待映射 Tracker</span><Tag color={unmappedTrackers.data?.length ? 'warning' : 'success'}>{unmappedTrackers.data?.length ?? 0}</Tag></Space>}
+        extra={<Typography.Text type="secondary">仅显示脱敏主机与静态路径</Typography.Text>}
+        className="table-card"
+      >
+        <PageState
+          loading={unmappedTrackers.isLoading}
+          error={unmappedTrackers.error}
+          onRetry={() => void unmappedTrackers.refetch()}
+          empty={unmappedTrackers.data?.length === 0}
+          emptyDescription="当前没有缺少映射的 Tracker。"
+        >
+          <Table<UnmappedTrackerIdentity>
+            rowKey={(tracker) => `${tracker.hostIdentity}\u0000${tracker.pathHint}`}
+            size="small"
+            columns={unmappedColumns}
+            dataSource={unmappedTrackers.data}
+            pagination={{ pageSize: 10, showSizeChanger: true }}
+            scroll={{ x: 820 }}
+          />
+        </PageState>
+      </Card>
 
       <Card
         title="IYUU 站点目录"
@@ -241,7 +331,7 @@ export function TrackerRulesPage() {
         emptyDescription={
           <Space direction="vertical">
             <span>还没有 Tracker 分类规则。</span>
-            <Button type="primary" icon={<PlusOutlined />} onClick={() => setModalOpen(true)}>创建第一条规则</Button>
+            <Button type="primary" icon={<PlusOutlined />} onClick={() => openRuleModal()}>创建第一条规则</Button>
           </Space>
         }
       >

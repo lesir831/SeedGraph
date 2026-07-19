@@ -8,6 +8,7 @@ import {
   toDownloader,
   toOverview,
   toTorrentGroup,
+  toUnmappedTrackerIdentity,
 } from '../src/api/transformers'
 import type { TorrentGroup, TorrentInstance } from '../src/api/types'
 
@@ -23,6 +24,7 @@ const makeInstance = (overrides: Partial<TorrentInstance>): TorrentInstance => (
   progress: 1,
   ratio: 2,
   state: 'seeding',
+  sites: [],
   ...overrides,
 })
 
@@ -94,6 +96,7 @@ describe('API model helpers', () => {
       locked: false,
       version: 2,
       stale: false,
+      oldest_added_at: '2026-07-17T12:00:00Z',
       updated_at: '2026-07-18T00:00:00Z',
       instances: [{
         id: 'instance-1',
@@ -110,6 +113,7 @@ describe('API model helpers', () => {
         status: 'seeding',
         progress: 1,
         ratio: 2.5,
+        added_at: '2026-07-17T12:00:00Z',
         updated_at: '2026-07-18T00:00:00Z',
         sites: ['Example'],
       }],
@@ -117,7 +121,30 @@ describe('API model helpers', () => {
 
     expect(group.canonicalPath).toBe('/data/linux.iso')
     expect(group.groupingMethod).toBe('automatic')
-    expect(group.instances[0]).toMatchObject({ hash: 'abc', trackerHost: 'Example', state: 'seeding' })
+    expect(group.oldestAddedAt).toBe('2026-07-17T12:00:00Z')
+    expect(group.instances[0]).toMatchObject({
+      hash: 'abc',
+      trackerHost: 'Example',
+      sites: ['Example'],
+      addedAt: '2026-07-17T12:00:00Z',
+      state: 'seeding',
+    })
+  })
+
+  it('maps privacy-preserving unmapped Tracker identities', () => {
+    expect(toUnmappedTrackerIdentity({
+      host_identity: 'tracker.example.com',
+      path_hint: '/announce/*',
+      instance_count: 3,
+      group_count: 2,
+      last_seen_at: '2026-07-19T00:00:00Z',
+    })).toEqual({
+      hostIdentity: 'tracker.example.com',
+      pathHint: '/announce/*',
+      instanceCount: 3,
+      groupCount: 2,
+      lastSeenAt: '2026-07-19T00:00:00Z',
+    })
   })
 
   it('derives overview and downloader health without leaking wire naming', () => {

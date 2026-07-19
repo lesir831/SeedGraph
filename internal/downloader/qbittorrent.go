@@ -256,6 +256,7 @@ type qbittorrentTorrent struct {
 	Downloaded    int64           `json:"downloaded"`
 	UploadSpeed   int64           `json:"upspeed"`
 	DownloadSpeed int64           `json:"dlspeed"`
+	AddedOn       int64           `json:"added_on"`
 	Tracker       string          `json:"tracker"`
 	Trackers      json.RawMessage `json:"trackers"`
 }
@@ -270,6 +271,10 @@ func (raw qbittorrentTorrent) toTorrent() (Torrent, error) {
 		return Torrent{}, err
 	}
 	trackers = appendUniqueNonEmpty(trackers, raw.Tracker)
+	addedAt, err := parseTorrentAddedAt(raw.AddedOn)
+	if err != nil {
+		return Torrent{}, errors.New("qbittorrent torrent info: invalid added time")
+	}
 	contentPath := raw.ContentPath
 	if contentPath == "" {
 		contentPath = joinRemotePath(raw.SavePath, raw.Name)
@@ -287,6 +292,7 @@ func (raw qbittorrentTorrent) toTorrent() (Torrent, error) {
 		DownloadedBytes: maxInt64(raw.Downloaded, 0),
 		UploadSpeed:     maxInt64(raw.UploadSpeed, 0),
 		DownloadSpeed:   maxInt64(raw.DownloadSpeed, 0),
+		AddedAt:         addedAt,
 		TrackerURLs:     trackers,
 	}, nil
 }

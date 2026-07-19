@@ -4,7 +4,9 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"slices"
 	"testing"
+	"time"
 )
 
 func operationTestRecord(downloader Downloader, hash, groupID string) TorrentRecord {
@@ -76,6 +78,102 @@ func TestMoveInstanceAndUndoRestoresExactMembership(t *testing.T) {
 	}
 	if _, err := store.UndoGroupOperation(context.Background(), detail.OperationID); !errors.Is(err, ErrVersionConflict) {
 		t.Fatalf("second undo error = %v, want version conflict", err)
+	}
+}
+
+func TestListTorrentGroupsSortsByWhitelistedFields(t *testing.T) {
+	store := openTestStore(t)
+	store.now = func() time.Time { return time.Unix(4000, 0).UTC() }
+	downloader := seedDownloader(t, store)
+
+	alphaOne := operationTestRecord(downloader, "alpha-one", "group-alpha")
+	alphaOne.Name = "Alpha"
+	alphaOne.WantedBytes = 50
+	alphaOne.AddedAt = time.Unix(100, 0).UTC()
+	alphaTwo := operationTestRecord(downloader, "alpha-two", "group-alpha")
+	alphaTwo.Name = "Alpha"
+	alphaTwo.WantedBytes = 60
+	alphaTwo.AddedAt = time.Unix(200, 0).UTC()
+	beta := operationTestRecord(downloader, "beta", "group-beta")
+	beta.Name = "Beta"
+	beta.WantedBytes = 100
+	beta.AddedAt = time.Unix(300, 0).UTC()
+	gamma := operationTestRecord(downloader, "gamma", "group-gamma")
+	gamma.Name = "Gamma"
+	gamma.WantedBytes = 200
+	gamma.AddedAt = time.Unix(200, 0).UTC()
+
+	if _, err := store.ApplySync(context.Background(), ApplySyncParams{
+		DownloaderID: downloader.ID, Mode: "full", Complete: true,
+		Torrents: []TorrentRecord{alphaOne, alphaTwo, beta, gamma},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		name      string
+		sortBy    string
+		sortOrder string
+		want      []string
+	}{
+		{name: "default remains updated descending with stable ID fallback", want: []string{"group-alpha", "group-beta", "group-gamma"}},
+		{name: "oldest ascending", sortBy: "oldest_added_at", sortOrder: "asc", want: []string{"group-alpha", "group-gamma", "group-beta"}},
+		{name: "oldest descending", sortBy: "oldest_added_at", sortOrder: "desc", want: []string{"group-beta", "group-gamma", "group-alpha"}},
+		{name: "instance count ascending", sortBy: "instance_count", sortOrder: "asc", want: []string{"group-beta", "group-gamma", "group-alpha"}},
+		{name: "instance count descending", sortBy: "instance_count", sortOrder: "desc", want: []string{"group-alpha", "group-beta", "group-gamma"}},
+		{name: "size ascending", sortBy: "size", sortOrder: "asc", want: []string{"group-alpha", "group-beta", "group-gamma"}},
+		{name: "size descending", sortBy: "size", sortOrder: "desc", want: []string{"group-gamma", "group-beta", "group-alpha"}},
+		{name: "name ascending", sortBy: "name", sortOrder: "asc", want: []string{"group-alpha", "group-beta", "group-gamma"}},
+		{name: "name descending", sortBy: "name", sortOrder: "desc", want: []string{"group-gamma", "group-beta", "group-alpha"}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			groups, total, err := store.ListTorrentGroups(context.Background(), GroupFilters{
+				SortBy: test.sortBy, SortOrder: test.sortOrder, Limit: 20,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if total != 3 {
+				t.Fatalf("total = %d, want 3", total)
+			}
+			got := make([]string, 0, len(groups))
+			for _, group := range groups {
+				got = append(got, group.ID)
+			}
+			if !slices.Equal(got, test.want) {
+				t.Fatalf("group IDs = %v, want %v", got, test.want)
+			}
+		})
+	}
+
+	detail, err := store.GetTorrentGroup(context.Background(), "group-alpha", time.Time{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !detail.OldestAddedAt.Equal(time.Unix(100, 0).UTC()) {
+		t.Fatalf("oldest_added_at = %s", detail.OldestAddedAt)
+	}
+	gotAddedAt := make([]int64, 0, len(detail.Instances))
+	for _, instance := range detail.Instances {
+		gotAddedAt = append(gotAddedAt, instance.AddedAt.Unix())
+	}
+	slices.Sort(gotAddedAt)
+	if !slices.Equal(gotAddedAt, []int64{100, 200}) {
+		t.Fatalf("instance added_at values = %v", gotAddedAt)
+	}
+}
+
+func TestListTorrentGroupsRejectsInvalidSort(t *testing.T) {
+	store := openTestStore(t)
+	for _, filters := range []GroupFilters{
+		{SortBy: "updated_at", SortOrder: "desc"},
+		{SortBy: "name", SortOrder: "sideways"},
+		{SortOrder: "asc"},
+	} {
+		if _, _, err := store.ListTorrentGroups(context.Background(), filters); !errors.Is(err, ErrInvalidGroupSort) {
+			t.Fatalf("ListTorrentGroups(%+v) error = %v, want ErrInvalidGroupSort", filters, err)
+		}
 	}
 }
 

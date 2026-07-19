@@ -11,6 +11,7 @@ import type {
   TorrentGroup,
   TorrentInstance,
   TrackerRule,
+  UnmappedTrackerIdentity,
 } from './types'
 
 export interface WirePagedResponse<T> {
@@ -60,6 +61,7 @@ export interface WireTorrentGroup {
   locked: boolean
   version: number
   stale: boolean
+  oldest_added_at?: string | null
   updated_at: string
 	operation_id?: string
   instances?: WireTorrentInstance[] | null
@@ -80,6 +82,7 @@ export interface WireTorrentInstance {
   status: string
   progress: number
   ratio: number
+  added_at?: string | null
   updated_at: string
   last_sync_at?: string | null
   sites?: string[] | null
@@ -116,6 +119,14 @@ export interface WireTrackerRule {
   priority: number
   created_at: string
   updated_at: string
+}
+
+export interface WireUnmappedTrackerIdentity {
+  host_identity: string
+  path_hint: string
+  instance_count: number
+  group_count: number
+  last_seen_at: string
 }
 
 export interface WireSyncStatus {
@@ -231,7 +242,9 @@ const toTorrentInstance = (wire: WireTorrentInstance): TorrentInstance => ({
   progress: wire.progress,
   ratio: wire.ratio,
   state: wire.status,
+  sites: wire.sites ?? [],
   trackerHost: wire.sites?.join(', '),
+  addedAt: wire.added_at ?? undefined,
 })
 
 export const toTorrentGroup = (wire: WireTorrentGroup): TorrentGroup => {
@@ -254,6 +267,7 @@ export const toTorrentGroup = (wire: WireTorrentGroup): TorrentGroup => {
     dataCopyCount: wire.data_copy_count,
     confidence: wire.confidence === 'verified' || wire.confidence === 'manual' ? wire.confidence : 'tentative',
     stale: wire.stale,
+    oldestAddedAt: wire.oldest_added_at ?? undefined,
     updatedAt: wire.updated_at,
 		operationId: wire.operation_id,
   }
@@ -290,6 +304,14 @@ export const toTrackerRule = (wire: WireTrackerRule): TrackerRule => ({
   priority: wire.priority,
   createdAt: wire.created_at,
   updatedAt: wire.updated_at,
+})
+
+export const toUnmappedTrackerIdentity = (wire: WireUnmappedTrackerIdentity): UnmappedTrackerIdentity => ({
+  hostIdentity: wire.host_identity,
+  pathHint: wire.path_hint,
+  instanceCount: wire.instance_count,
+  groupCount: wire.group_count,
+  lastSeenAt: wire.last_seen_at,
 })
 
 export const toConnectionTest = (wire: Record<string, unknown>): ConnectionTestResult => ({

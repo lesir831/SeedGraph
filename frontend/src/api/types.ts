@@ -47,6 +47,7 @@ export interface TorrentInstance {
   progress: number
   ratio: number
   state: string
+  sites: string[]
   trackerHost?: string
   addedAt?: string
   completedAt?: string
@@ -70,9 +71,13 @@ export interface TorrentGroup {
   dataCopyCount: number
   confidence: 'tentative' | 'verified' | 'manual'
   stale: boolean
+  oldestAddedAt?: string
   updatedAt: string
 	operationId?: string
 }
+
+export type GroupSortBy = 'oldest_added_at' | 'instance_count' | 'size' | 'name'
+export type SortOrder = 'asc' | 'desc'
 
 export interface GroupFilters {
   query?: string
@@ -81,6 +86,8 @@ export interface GroupFilters {
   missingSite?: string
   maxSiteCount?: number
   stale?: boolean
+  sortBy?: GroupSortBy
+  sortOrder?: SortOrder
   page: number
   pageSize: number
 }
@@ -202,6 +209,14 @@ export interface TrackerRuleInput {
   pathPrefix: string
   siteName: string
   displayName: string
+}
+
+export interface UnmappedTrackerIdentity {
+  hostIdentity: string
+  pathHint: string
+  instanceCount: number
+  groupCount: number
+  lastSeenAt: string
 }
 
 export interface IYUUSite {

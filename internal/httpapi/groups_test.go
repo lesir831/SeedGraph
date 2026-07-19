@@ -104,3 +104,30 @@ func TestMoveAndUndoGroupOperationHandlers(t *testing.T) {
 		t.Fatalf("unexpected undo response: %+v", undoPayload.Data)
 	}
 }
+
+func TestListGroupsValidatesSortQuery(t *testing.T) {
+	database, err := store.Open(context.Background(), t.TempDir()+"/seedgraph.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = database.Close() })
+	server := &Server{store: database, logger: slog.Default()}
+
+	validResponse := httptest.NewRecorder()
+	server.listGroups(validResponse, httptest.NewRequest(http.MethodGet, "/?sort_by=name&sort_order=desc", nil))
+	if validResponse.Code != http.StatusOK {
+		t.Fatalf("valid sort status = %d, body = %s", validResponse.Code, validResponse.Body.String())
+	}
+
+	for _, target := range []string{
+		"/?sort_by=updated_at&sort_order=desc",
+		"/?sort_by=name&sort_order=sideways",
+		"/?sort_order=asc",
+	} {
+		response := httptest.NewRecorder()
+		server.listGroups(response, httptest.NewRequest(http.MethodGet, target, nil))
+		if response.Code != http.StatusBadRequest {
+			t.Fatalf("GET %s status = %d, body = %s", target, response.Code, response.Body.String())
+		}
+	}
+}

@@ -29,10 +29,25 @@ func (s *Server) listGroups(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, http.StatusBadRequest, "invalid_query", err.Error())
 		return
 	}
+	sortBy := r.URL.Query().Get("sort_by")
+	sortOrder := r.URL.Query().Get("sort_order")
+	if sortBy == "" && sortOrder != "" {
+		writeAPIError(w, http.StatusBadRequest, "invalid_query", "sort_order 必须与 sort_by 一起提供")
+		return
+	}
+	if sortBy != "" && sortBy != "oldest_added_at" && sortBy != "instance_count" && sortBy != "size" && sortBy != "name" {
+		writeAPIError(w, http.StatusBadRequest, "invalid_query", "sort_by 必须是 oldest_added_at、instance_count、size 或 name")
+		return
+	}
+	if sortOrder != "" && sortOrder != "asc" && sortOrder != "desc" {
+		writeAPIError(w, http.StatusBadRequest, "invalid_query", "sort_order 必须是 asc 或 desc")
+		return
+	}
 	filters := store.GroupFilters{
 		Search: r.URL.Query().Get("q"), MissingSite: r.URL.Query().Get("missing_site"),
 		DownloaderID: r.URL.Query().Get("downloader_id"), Status: r.URL.Query().Get("status"),
-		StaleBefore: time.Now().Add(-s.staleAfter), Limit: limit, Offset: offset,
+		StaleBefore: time.Now().Add(-s.staleAfter), SortBy: sortBy, SortOrder: sortOrder,
+		Limit: limit, Offset: offset,
 	}
 	if value := r.URL.Query().Get("max_site_count"); value != "" {
 		parsed, err := strconv.Atoi(value)

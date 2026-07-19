@@ -58,6 +58,10 @@ func Open(ctx context.Context, path string) (*Store, error) {
 		_ = db.Close()
 		return nil, err
 	}
+	if err := store.normalizePersistedTrackerData(ctx); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("normalize persisted tracker data: %w", err)
+	}
 	return store, nil
 }
 

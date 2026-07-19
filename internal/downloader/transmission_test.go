@@ -11,6 +11,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 func TestTransmissionSessionNegotiationAndVersion(t *testing.T) {
@@ -86,7 +87,7 @@ func TestTransmissionFullSnapshotParsesTableAndWantedFiles(t *testing.T) {
 		if err := json.Unmarshal(rpcRequest.Params["fields"], &fields); err != nil {
 			t.Fatalf("decode fields: %v", err)
 		}
-		for _, required := range []string{"hash_string", "files", "wanted", "tracker_stats"} {
+		for _, required := range []string{"hash_string", "added_date", "files", "wanted", "tracker_stats"} {
 			if !slices.Contains(fields, required) {
 				t.Errorf("missing field %q in %#v", required, fields)
 			}
@@ -95,13 +96,13 @@ func TestTransmissionFullSnapshotParsesTableAndWantedFiles(t *testing.T) {
 		header := []string{
 			"tracker_stats", "wanted", "files", "status", "rate_download", "rate_upload",
 			"downloaded_ever", "uploaded_ever", "upload_ratio", "percent_complete", "total_size",
-			"download_dir", "name", "hash_string", "id",
+			"download_dir", "name", "hash_string", "id", "added_date",
 		}
 		row := []any{
 			[]map[string]any{{"announce": trackerURL, "host": "tracker.example"}},
 			[]bool{true, false, true},
 			[]map[string]any{{"name": "a", "length": 10}, {"name": "b", "length": 20}, {"name": "c", "length": 30}},
-			4, 222, 111, 400, 500, 1.5, 0.75, 60, "/downloads", "Linux ISO", strings.ToUpper(testHashA), 42,
+			4, 222, 111, 400, 500, 1.5, 0.75, 60, "/downloads", "Linux ISO", strings.ToUpper(testHashA), 42, 1712345678,
 		}
 		writeRPCResult(t, writer, rpcRequest.ID, map[string]any{"torrents": []any{header, row}})
 	}))
@@ -130,6 +131,9 @@ func TestTransmissionFullSnapshotParsesTableAndWantedFiles(t *testing.T) {
 	}
 	if torrent.ContentPath != "/downloads/Linux ISO" || torrent.State != "downloading" {
 		t.Fatalf("path/state = %+v", torrent)
+	}
+	if !torrent.AddedAt.Equal(time.Unix(1712345678, 0).UTC()) {
+		t.Fatalf("added time = %s", torrent.AddedAt)
 	}
 	if !slices.Equal(torrent.TrackerURLs, []string{trackerURL}) {
 		t.Fatalf("trackers = %#v", torrent.TrackerURLs)
@@ -277,6 +281,45 @@ func TestTransmissionNeverFallsBackToNumericIDForIdentity(t *testing.T) {
 	}
 }
 
+func TestTransmissionRejectsNegativeAddedTime(t *testing.T) {
+	t.Parallel()
+	header, row := transmissionTestTable(testHashA, 1)
+	for index, field := range header {
+		if field == "added_date" {
+			row[index] = -1
+		}
+	}
+	raw, err := json.Marshal([]any{header, row})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = decodeTransmissionTorrents(raw)
+	if err == nil || !strings.Contains(err.Error(), "invalid added time") {
+		t.Fatalf("decodeTransmissionTorrents() error = %v", err)
+	}
+}
+
+func TestTransmissionTreatsUnencodableAddedTimeAsUnknown(t *testing.T) {
+	t.Parallel()
+	header, row := transmissionTestTable(testHashA, 1)
+	for index, field := range header {
+		if field == "added_date" {
+			row[index] = maxJSONUnixTimestamp + 1
+		}
+	}
+	raw, err := json.Marshal([]any{header, row})
+	if err != nil {
+		t.Fatal(err)
+	}
+	torrents, err := decodeTransmissionTorrents(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(torrents) != 1 || !torrents[0].AddedAt.IsZero() {
+		t.Fatalf("torrents = %+v, want one torrent with unknown added time", torrents)
+	}
+}
+
 type testRPCRequest struct {
 	JSONRPC string
 	Method  string
@@ -317,11 +360,11 @@ func writeRPCResult(t *testing.T, writer http.ResponseWriter, id uint64, result 
 func transmissionTestTable(hash string, id int) ([]string, []any) {
 	header := []string{
 		"id", "hash_string", "name", "download_dir", "total_size", "percent_complete", "upload_ratio",
-		"uploaded_ever", "downloaded_ever", "rate_upload", "rate_download", "status", "files", "wanted", "tracker_stats",
+		"uploaded_ever", "downloaded_ever", "rate_upload", "rate_download", "status", "added_date", "files", "wanted", "tracker_stats",
 	}
 	row := []any{
 		id, hash, "Torrent", "/data", 5, 1.0, 2.0,
-		2, 5, 0, 0, 6, []map[string]any{{"length": 5}}, []bool{true}, []map[string]any{},
+		2, 5, 0, 0, 6, 1712345678, []map[string]any{{"length": 5}}, []bool{true}, []map[string]any{},
 	}
 	return header, row
 }

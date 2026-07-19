@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 const (
@@ -63,7 +64,7 @@ func TestQBittorrentLoginVersionAndFullSnapshot(t *testing.T) {
 				{
 					"hash": testHashA, "name": "Ubuntu", "save_path": "/data",
 					"size": 120, "progress": 0.5, "ratio": 1.25, "uploaded": 80, "downloaded": 60,
-					"upspeed": 7, "dlspeed": 9, "state": "downloading",
+					"upspeed": 7, "dlspeed": 9, "state": "downloading", "added_on": 1712345678,
 					"trackers": []any{map[string]any{"url": trackerURL}, "udp://public.example:80/announce"},
 				},
 			})
@@ -116,6 +117,9 @@ func TestQBittorrentLoginVersionAndFullSnapshot(t *testing.T) {
 	}
 	if torrent.ContentPath != "/data/Ubuntu" || torrent.State != "downloading" || torrent.Progress != 0.5 {
 		t.Fatalf("torrent fields = %+v", torrent)
+	}
+	if !torrent.AddedAt.Equal(time.Unix(1712345678, 0).UTC()) {
+		t.Fatalf("added time = %s", torrent.AddedAt)
 	}
 	if !slices.Equal(torrent.TrackerURLs, []string{trackerURL, "udp://public.example:80/announce"}) {
 		t.Fatalf("trackers = %#v", torrent.TrackerURLs)
@@ -249,6 +253,25 @@ func TestQBittorrentErrorsRedactRemoteBodyAndCredentials(t *testing.T) {
 		if strings.Contains(err.Error(), secret) {
 			t.Fatalf("error leaked secret %q: %v", secret, err)
 		}
+	}
+}
+
+func TestQBittorrentRejectsNegativeAddedTime(t *testing.T) {
+	t.Parallel()
+	_, err := (qbittorrentTorrent{Hash: testHashA, AddedOn: -1}).toTorrent()
+	if err == nil || !strings.Contains(err.Error(), "invalid added time") {
+		t.Fatalf("toTorrent() error = %v", err)
+	}
+}
+
+func TestQBittorrentTreatsUnencodableAddedTimeAsUnknown(t *testing.T) {
+	t.Parallel()
+	torrent, err := (qbittorrentTorrent{Hash: testHashA, AddedOn: maxJSONUnixTimestamp + 1}).toTorrent()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !torrent.AddedAt.IsZero() {
+		t.Fatalf("added time = %s, want unknown", torrent.AddedAt)
 	}
 }
 

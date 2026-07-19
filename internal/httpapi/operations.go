@@ -16,6 +16,15 @@ func (s *Server) listTrackerRules(w http.ResponseWriter, r *http.Request) {
 	writeData(w, http.StatusOK, items)
 }
 
+func (s *Server) listUnmappedTrackerIdentities(w http.ResponseWriter, r *http.Request) {
+	items, err := s.store.ListUnmappedTrackerIdentities(r.Context())
+	if err != nil {
+		s.handleError(w, r, err)
+		return
+	}
+	writeData(w, http.StatusOK, items)
+}
+
 func (s *Server) createTrackerRule(w http.ResponseWriter, r *http.Request) {
 	var request struct {
 		HostPattern string `json:"host_pattern"`
