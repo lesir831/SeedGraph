@@ -54,29 +54,33 @@ func (s *Store) CreateCustomTrackerRule(ctx context.Context, params CreateTracke
 	params.PathPrefix = sanitizePathHint(params.PathPrefix)
 	params.SiteName = strings.TrimSpace(params.SiteName)
 	params.DisplayName = strings.TrimSpace(params.DisplayName)
-	if params.SiteName == "" || params.DisplayName == "" {
-		return TrackerRule{}, errors.New("site name and display name are required")
+	if params.SiteName == "" {
+		return TrackerRule{}, errors.New("site name is required")
 	}
 
-	siteID := uuid.NewString()
+	var siteID string
 	ruleID := uuid.NewString()
 	now := s.now().Unix()
 	err = s.WithWriteTx(ctx, func(tx *sql.Tx) error {
-		if err := tx.QueryRowContext(ctx, "SELECT id FROM sites WHERE name = ?", params.SiteName).Scan(&siteID); err != nil && !errors.Is(err, sql.ErrNoRows) {
+		err := tx.QueryRowContext(ctx, "SELECT id FROM sites WHERE name = ?", params.SiteName).Scan(&siteID)
+		switch {
+		case err == nil:
+			// Reuse the canonical site identity exactly as maintained by IYUU (or
+			// by an earlier custom rule). Creating a Tracker rule must not turn an
+			// IYUU site into a custom site or overwrite catalog-managed metadata.
+		case errors.Is(err, sql.ErrNoRows):
+			if params.DisplayName == "" {
+				return errors.New("display name is required for a new site")
+			}
+			siteID = uuid.NewString()
+			if _, err := tx.ExecContext(ctx, `
+                INSERT INTO sites(id, name, display_name, source, created_at, updated_at)
+                VALUES(?, ?, ?, 'custom', ?, ?)`,
+				siteID, params.SiteName, params.DisplayName, now, now); err != nil {
+				return fmt.Errorf("create custom site: %w", err)
+			}
+		default:
 			return fmt.Errorf("look up site: %w", err)
-		}
-		if _, err := tx.ExecContext(ctx, `
-            INSERT INTO sites(id, name, display_name, source, created_at, updated_at)
-            VALUES(?, ?, ?, 'custom', ?, ?)
-            ON CONFLICT(name) DO UPDATE SET
-                display_name = excluded.display_name,
-                source = CASE WHEN sites.source = 'custom' THEN 'custom' ELSE sites.source END,
-                updated_at = excluded.updated_at`,
-			siteID, params.SiteName, params.DisplayName, now, now); err != nil {
-			return fmt.Errorf("upsert site: %w", err)
-		}
-		if err := tx.QueryRowContext(ctx, "SELECT id FROM sites WHERE name = ?", params.SiteName).Scan(&siteID); err != nil {
-			return fmt.Errorf("resolve site after upsert: %w", err)
 		}
 		if _, err := tx.ExecContext(ctx, `
             INSERT INTO tracker_rules(

@@ -93,6 +93,68 @@ func TestCreateCustomTrackerRule(t *testing.T) {
 	}
 }
 
+func TestCreateCustomTrackerRuleReusesIYUUSiteWithoutOverwritingCatalogMetadata(t *testing.T) {
+	database := openTestStore(t)
+	ctx := context.Background()
+	fetchedAt := time.Unix(1_800, 0).UTC()
+	if err := database.ApplyIYUUCatalog(ctx, []IYUUSiteInput{{
+		RemoteID: 95, Slug: "qingwapt", Nickname: "青蛙", BaseURL: "www.qingwapt.com",
+		IsHTTPS: 1, CookieRequired: 0,
+	}}, fetchedAt); err != nil {
+		t.Fatal(err)
+	}
+
+	var existingSiteID string
+	if err := database.db.QueryRow(
+		"SELECT id FROM sites WHERE name = ?", "qingwapt",
+	).Scan(&existingSiteID); err != nil {
+		t.Fatal(err)
+	}
+	rule, err := database.CreateCustomTrackerRule(ctx, CreateTrackerRuleParams{
+		HostPattern: "tracker.qingwa.pro",
+		SiteName:    "qingwapt",
+		// Selecting an existing catalog site does not require caller-owned
+		// display metadata and must never overwrite IYUU's canonical nickname.
+		DisplayName: "",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rule.SiteID != existingSiteID || rule.SiteName != "qingwapt" || rule.DisplayName != "青蛙" {
+		t.Fatalf("rule did not reuse IYUU site: %+v, site ID %q", rule, existingSiteID)
+	}
+
+	var source, displayName, baseURL string
+	var remoteID int64
+	if err := database.db.QueryRow(`
+		SELECT source, display_name, base_url, iyuu_remote_id FROM sites WHERE id = ?`,
+		existingSiteID,
+	).Scan(&source, &displayName, &baseURL, &remoteID); err != nil {
+		t.Fatal(err)
+	}
+	if source != "iyuu" || displayName != "青蛙" || baseURL != "www.qingwapt.com" || remoteID != 95 {
+		t.Fatalf("IYUU site metadata changed: source=%q display=%q base=%q remote=%d",
+			source, displayName, baseURL, remoteID)
+	}
+}
+
+func TestCreateCustomTrackerRuleRequiresDisplayNameForNewSite(t *testing.T) {
+	database := openTestStore(t)
+	if _, err := database.CreateCustomTrackerRule(context.Background(), CreateTrackerRuleParams{
+		HostPattern: "tracker.new-site.example",
+		SiteName:    "new-site",
+	}); err == nil {
+		t.Fatal("CreateCustomTrackerRule created a new site without a display name")
+	}
+	var count int
+	if err := database.db.QueryRow("SELECT COUNT(*) FROM sites WHERE name = ?", "new-site").Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 0 {
+		t.Fatalf("invalid custom site was persisted: count=%d", count)
+	}
+}
+
 func TestCreateCustomTrackerRuleRedactsCredentialLikeHostLabel(t *testing.T) {
 	database := openTestStore(t)
 	secret := "a91f3c7e5b2d8046a91f3c7e5b2d8046"

@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   Alert,
   App,
+  AutoComplete,
   Button,
   Card,
   Form,
@@ -68,6 +69,7 @@ export function TrackerRulesPage() {
   const [siteFilters, setSiteFilters] = useState<IYUUSiteFilters>(initialSiteFilters)
   const [trackerSearch, setTrackerSearch] = useState('')
   const [siteSearch, setSiteSearch] = useState('')
+  const [selectedSiteSlug, setSelectedSiteSlug] = useState<string>()
   const [form] = Form.useForm<TrackerRuleInput>()
 
   const rules = useQuery({ queryKey: ['tracker-rules'], queryFn: api.getTrackerRules })
@@ -79,6 +81,18 @@ export function TrackerRulesPage() {
     queryKey: ['iyuu-sites', siteFilters],
     queryFn: () => api.getIYUUSites(siteFilters),
   })
+  const ruleSiteCatalog = useQuery({
+    queryKey: ['iyuu-sites', 'tracker-rule-options'],
+    queryFn: () => api.getIYUUSites({ status: 'all', page: 1, pageSize: 200 }),
+    enabled: modalOpen,
+    staleTime: 60_000,
+  })
+
+  const ruleSiteOptions = (ruleSiteCatalog.data?.items ?? []).map((site) => ({
+    value: site.slug,
+    label: `${site.nickname || site.slug} · ${site.slug} · ${site.baseUrl}${site.stale ? ' · 上游已缺失' : ''}`,
+  }))
+  const selectedIYUUSite = ruleSiteCatalog.data?.items.find((site) => site.slug === selectedSiteSlug)
 
   useEffect(() => {
     const result = trackerMappings.data
@@ -99,6 +113,7 @@ export function TrackerRulesPage() {
   }, [iyuuCatalog.data, siteFilters.page, siteFilters.pageSize])
 
   const openRuleModal = (tracker?: Pick<TrackerMapping, 'hostIdentity' | 'pathHint'>) => {
+    setSelectedSiteSlug(undefined)
     form.setFieldsValue(tracker ? {
       ...initialValues,
       hostPattern: tracker.hostIdentity,
@@ -124,6 +139,7 @@ export function TrackerRulesPage() {
       void message.success('Tracker 规则已添加，已有任务已重新映射')
       setModalOpen(false)
       form.resetFields()
+      setSelectedSiteSlug(undefined)
       await invalidateMappings()
     },
     onError: (error) => void message.error(displayError(error)),
@@ -154,6 +170,20 @@ export function TrackerRulesPage() {
       ])
     },
   })
+
+  const updateRuleSite = (siteName: string) => {
+    const site = ruleSiteCatalog.data?.items.find((candidate) => candidate.slug === siteName)
+    const resetCatalogDisplayName = Boolean(selectedSiteSlug && !site)
+    setSelectedSiteSlug(site?.slug)
+    form.setFieldsValue({
+      siteName,
+      ...(site
+        ? { displayName: site.nickname || site.slug }
+        : resetCatalogDisplayName
+          ? { displayName: '' }
+          : {}),
+    })
+  }
 
   const ruleColumns: TableColumnsType<TrackerRule> = [
     {
@@ -534,6 +564,8 @@ export function TrackerRulesPage() {
         onCancel={() => {
           setModalOpen(false)
           createMutation.reset()
+          form.resetFields()
+          setSelectedSiteSlug(undefined)
         }}
         onOk={() => void form.validateFields().then((values) => createMutation.mutate(values))}
       >
@@ -544,11 +576,47 @@ export function TrackerRulesPage() {
           <Form.Item name="pathPrefix" label="静态路径前缀（可选）" extra="仅用于同一主机下的静态站点区分；敏感长路径会由服务端脱敏。">
             <Input placeholder="/announce" />
           </Form.Item>
-          <Form.Item name="siteName" label="内部站点名" rules={[{ required: true, message: '请输入内部站点名' }, { pattern: /^[a-z0-9][a-z0-9._-]*$/i, message: '请使用字母、数字、点、下划线或短横线' }]}>
-            <Input placeholder="mteam" />
+          <Form.Item
+            name="siteName"
+            label="映射站点"
+            rules={[
+              { required: true, message: '请选择或输入站点' },
+              { pattern: /^[a-z0-9][a-z0-9._-]*$/i, message: '新站点内部名请使用字母、数字、点、下划线或短横线' },
+            ]}
+            extra={selectedIYUUSite
+              ? `复用 IYUU 站点：${selectedIYUUSite.nickname || selectedIYUUSite.slug} · ${selectedIYUUSite.baseUrl}`
+              : '可搜索并选择 IYUU 站点；若输入的内部站点名不存在，保存时将新建本地站点。'}
+          >
+            <AutoComplete
+              allowClear
+              options={ruleSiteOptions}
+              optionFilterProp="label"
+              notFoundContent={ruleSiteCatalog.isLoading ? '正在加载 IYUU 站点…' : '未找到；继续输入即可新建站点'}
+              placeholder="输入名称、域名搜索，或输入新站点内部名"
+              onChange={updateRuleSite}
+              onSelect={updateRuleSite}
+            />
           </Form.Item>
-          <Form.Item name="displayName" label="显示名称" rules={[{ required: true, message: '请输入显示名称' }, { max: 80 }]}>
-            <Input prefix={<TagsOutlined />} placeholder="例如：M-Team" />
+          {ruleSiteCatalog.error && (
+            <Alert
+              type="warning"
+              showIcon
+              message="IYUU 站点选项加载失败，仍可输入新站点"
+              description={displayError(ruleSiteCatalog.error)}
+              style={{ marginBottom: 16 }}
+            />
+          )}
+          <Form.Item
+            name="displayName"
+            label={selectedIYUUSite ? 'IYUU 显示名称' : '新站点显示名称'}
+            rules={[{ required: true, message: '请输入显示名称' }, { max: 80 }]}
+            extra={selectedIYUUSite ? '显示名称由 IYUU 目录维护，创建规则时不会覆盖。' : undefined}
+          >
+            <Input
+              prefix={<TagsOutlined />}
+              placeholder="例如：M-Team"
+              disabled={Boolean(selectedIYUUSite)}
+            />
           </Form.Item>
           {createMutation.error && <Alert type="error" showIcon message="保存失败" description={displayError(createMutation.error)} />}
         </Form>
