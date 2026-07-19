@@ -206,7 +206,11 @@ func TestQBittorrentSingletonFetchesManifestForSafeDeletionEvidence(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer rows.Close()
+	defer func() {
+		if err := rows.Close(); err != nil {
+			t.Errorf("close torrent file rows: %v", err)
+		}
+	}()
 	var paths [][2]string
 	for rows.Next() {
 		var sourcePath, canonicalPath string
@@ -214,6 +218,9 @@ func TestQBittorrentSingletonFetchesManifestForSafeDeletionEvidence(t *testing.T
 			t.Fatal(err)
 		}
 		paths = append(paths, [2]string{sourcePath, canonicalPath})
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
 	}
 	if len(paths) != 3 || paths[0][0] != "/downloads/Single/episode-01.mkv" || paths[0][1] != "/media/Single/episode-01.mkv" {
 		t.Fatalf("file manifest was not persisted with mapped paths: %#v", paths)
