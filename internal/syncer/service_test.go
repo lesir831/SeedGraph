@@ -89,13 +89,13 @@ func TestFullSyncAggregatesVerifiedCrossSeedsAndRedactsTrackers(t *testing.T) {
 		{
 			StableHash: "hash-one", Name: "Example A", ContentPath: "/downloads/Example",
 			WantedBytes: 60, SelectedFilesKnown: true, SelectedFileCount: 3,
-			SelectedFileSizes: files, State: "seeding", Progress: 1,
+			SelectedFileSizes: files, State: "seeding", Progress: 1, AddedAt: time.Unix(1000, 0).UTC(),
 			TrackerURLs: []string{"https://tracker.example.com/announce/abcdefghijklmnopqrstuvwx?passkey=secret"},
 		},
 		{
 			StableHash: "hash-two", Name: "Example B", ContentPath: "/downloads/Example",
 			WantedBytes: 60, SelectedFilesKnown: true, SelectedFileCount: 3,
-			SelectedFileSizes: files, State: "seeding", Progress: 1,
+			SelectedFileSizes: files, State: "seeding", Progress: 1, AddedAt: time.Unix(2000, 0).UTC(),
 			TrackerURLs: []string{"https://tracker.other.test/announce?token=also-secret"},
 		},
 	}}
@@ -114,6 +114,9 @@ func TestFullSyncAggregatesVerifiedCrossSeedsAndRedactsTrackers(t *testing.T) {
 	if total != 1 || len(groups) != 1 || groups[0].TaskCount != 2 || groups[0].Confidence != "verified" {
 		t.Fatalf("unexpected groups: total=%d groups=%+v", total, groups)
 	}
+	if !groups[0].OldestAddedAt.Equal(time.Unix(1000, 0).UTC()) {
+		t.Fatalf("oldest_added_at = %s", groups[0].OldestAddedAt)
+	}
 	var combined string
 	rows, err := database.DB().Query("SELECT host_identity || path_hint FROM torrent_trackers")
 	if err != nil {
@@ -129,6 +132,22 @@ func TestFullSyncAggregatesVerifiedCrossSeedsAndRedactsTrackers(t *testing.T) {
 	_ = rows.Close()
 	if strings.Contains(combined, "secret") || strings.Contains(combined, "abcdefghijklmnopqrstuvwx") {
 		t.Fatalf("tracker persistence leaked a secret: %q", combined)
+	}
+}
+
+func TestClassifyTrackersMatchesCanonicalSensitiveWildcardIdentity(t *testing.T) {
+	secret := "qrstuvwxyzabcdef"
+	items := classifyTrackers(
+		[]string{"https://node." + secret + ".intentional.example.com/announce"},
+		[]store.TrackerRule{{
+			HostPattern: "_redacted.intentional.example.com",
+			PathPrefix:  "/announce",
+			SiteID:      "sensitive-site",
+		}},
+	)
+	if len(items) != 1 || items[0].HostIdentity != "_redacted.intentional.example.com" ||
+		items[0].SiteID != "sensitive-site" || strings.Contains(items[0].HostIdentity, secret) {
+		t.Fatalf("sensitive wildcard identity was not classified safely: %+v", items)
 	}
 }
 

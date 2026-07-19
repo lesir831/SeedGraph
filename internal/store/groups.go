@@ -15,6 +15,8 @@ import (
 
 var ErrVersionConflict = errors.New("resource version conflict")
 
+var ErrInvalidGroupSort = errors.New("invalid torrent group sort")
+
 type GroupFilters struct {
 	ID           string
 	Search       string
@@ -24,6 +26,8 @@ type GroupFilters struct {
 	Status       string
 	Stale        *bool
 	StaleBefore  time.Time
+	SortBy       string
+	SortOrder    string
 	Limit        int
 	Offset       int
 }
@@ -41,6 +45,7 @@ type TorrentGroup struct {
 	Locked          bool      `json:"locked"`
 	Version         int       `json:"version"`
 	Stale           bool      `json:"stale"`
+	OldestAddedAt   time.Time `json:"oldest_added_at"`
 	UpdatedAt       time.Time `json:"updated_at"`
 }
 
@@ -56,6 +61,7 @@ type TorrentInstanceView struct {
 	WantedBytes      int64      `json:"wanted_bytes"`
 	DataGroupID      string     `json:"data_group_id"`
 	AssignmentSource string     `json:"assignment_source"`
+	AddedAt          time.Time  `json:"added_at"`
 	Status           string     `json:"status"`
 	Progress         float64    `json:"progress"`
 	Ratio            float64    `json:"ratio"`
@@ -79,6 +85,10 @@ func (s *Store) ListTorrentGroups(ctx context.Context, filters GroupFilters) ([]
 	}
 	if filters.StaleBefore.IsZero() {
 		filters.StaleBefore = s.now().Add(-5 * time.Minute)
+	}
+	orderBy, err := torrentGroupOrderBy(filters.SortBy, filters.SortOrder)
+	if err != nil {
+		return nil, 0, err
 	}
 
 	where := []string{"cg.deleted_at IS NULL", "ti.deleted_at IS NULL"}
@@ -143,15 +153,15 @@ func (s *Store) ListTorrentGroups(ctx context.Context, filters GroupFilters) ([]
 	}
 
 	query := `SELECT
-            cg.id, cg.display_name, MAX(ti.wanted_bytes), COUNT(DISTINCT ti.id),
+			cg.id, cg.display_name, MAX(ti.wanted_bytes), COUNT(DISTINCT ti.id),
             COUNT(DISTINCT CASE
                 WHEN tt.site_id IS NOT NULL THEN 'site:' || tt.site_id
                 ELSE 'unknown:' || tt.host_identity
             END),
             COUNT(DISTINCT ti.downloader_id), COUNT(DISTINCT ti.data_group_id),
-            cg.confidence, cg.mode, cg.locked, cg.version,
-            MAX(CASE WHEN COALESCE(d.last_success_at, 0) < ? THEN 1 ELSE 0 END),
-            cg.updated_at ` + base + ` ORDER BY cg.updated_at DESC LIMIT ? OFFSET ?`
+			cg.confidence, cg.mode, cg.locked, cg.version,
+			MAX(CASE WHEN COALESCE(d.last_success_at, 0) < ? THEN 1 ELSE 0 END),
+			MIN(COALESCE(ti.added_at, ti.first_seen_at)), cg.updated_at ` + base + ` ORDER BY ` + orderBy + ` LIMIT ? OFFSET ?`
 	queryArgs := append([]any{filters.StaleBefore.Unix()}, args...)
 	queryArgs = append(queryArgs, filters.Limit, filters.Offset)
 	rows, err := s.db.QueryContext(ctx, query, queryArgs...)
@@ -163,20 +173,51 @@ func (s *Store) ListTorrentGroups(ctx context.Context, filters GroupFilters) ([]
 	for rows.Next() {
 		var group TorrentGroup
 		var locked, stale int
-		var updatedAt int64
+		var oldestAddedAt, updatedAt int64
 		if err := rows.Scan(
 			&group.ID, &group.Name, &group.SizeBytes, &group.TaskCount, &group.SiteCount,
 			&group.DownloaderCount, &group.DataCopyCount, &group.Confidence, &group.Mode,
-			&locked, &group.Version, &stale, &updatedAt,
+			&locked, &group.Version, &stale, &oldestAddedAt, &updatedAt,
 		); err != nil {
 			return nil, 0, err
 		}
 		group.Locked = locked != 0
 		group.Stale = stale != 0
+		group.OldestAddedAt = time.Unix(oldestAddedAt, 0).UTC()
 		group.UpdatedAt = time.Unix(updatedAt, 0).UTC()
 		groups = append(groups, group)
 	}
 	return groups, total, rows.Err()
+}
+
+func torrentGroupOrderBy(sortBy, sortOrder string) (string, error) {
+	if sortBy == "" {
+		if sortOrder != "" {
+			return "", fmt.Errorf("%w: sort_order requires sort_by", ErrInvalidGroupSort)
+		}
+		return "cg.updated_at DESC, cg.id ASC", nil
+	}
+
+	var expression string
+	switch sortBy {
+	case "oldest_added_at":
+		expression = "MIN(COALESCE(ti.added_at, ti.first_seen_at))"
+	case "instance_count":
+		expression = "COUNT(DISTINCT ti.id)"
+	case "size":
+		expression = "MAX(ti.wanted_bytes)"
+	case "name":
+		expression = "cg.display_name COLLATE NOCASE"
+	default:
+		return "", fmt.Errorf("%w: unsupported sort_by", ErrInvalidGroupSort)
+	}
+	if sortOrder == "" {
+		sortOrder = "asc"
+	}
+	if sortOrder != "asc" && sortOrder != "desc" {
+		return "", fmt.Errorf("%w: unsupported sort_order", ErrInvalidGroupSort)
+	}
+	return expression + " " + strings.ToUpper(sortOrder) + ", cg.id ASC", nil
 }
 
 func (s *Store) GetTorrentGroup(ctx context.Context, id string, staleBefore time.Time) (TorrentGroupDetail, error) {
@@ -197,7 +238,8 @@ func (s *Store) GetTorrentGroup(ctx context.Context, id string, staleBefore time
 	rows, err := s.db.QueryContext(ctx, `
         SELECT ti.id, ti.downloader_id, d.name, d.kind, ti.stable_hash_key, ti.name,
                ti.canonical_path, ti.storage_id, ti.wanted_bytes, ti.data_group_id,
-               ti.assignment_source, COALESCE(tr.status, 'unknown'), COALESCE(tr.progress, 0),
+		       ti.assignment_source, COALESCE(ti.added_at, ti.first_seen_at),
+		       COALESCE(tr.status, 'unknown'), COALESCE(tr.progress, 0),
                COALESCE(tr.ratio, 0), COALESCE(tr.updated_at, ti.last_seen_at), d.last_success_at
         FROM torrent_instances ti
         JOIN downloaders d ON d.id = ti.downloader_id
@@ -211,16 +253,17 @@ func (s *Store) GetTorrentGroup(ctx context.Context, id string, staleBefore time
 	detail := TorrentGroupDetail{TorrentGroup: summary}
 	for rows.Next() {
 		var instance TorrentInstanceView
-		var updatedAt int64
+		var addedAt, updatedAt int64
 		var lastSync sql.NullInt64
 		if err := rows.Scan(
 			&instance.ID, &instance.DownloaderID, &instance.DownloaderName, &instance.DownloaderKind,
 			&instance.StableHashKey, &instance.Name, &instance.CanonicalPath, &instance.StorageID,
-			&instance.WantedBytes, &instance.DataGroupID, &instance.AssignmentSource,
+			&instance.WantedBytes, &instance.DataGroupID, &instance.AssignmentSource, &addedAt,
 			&instance.Status, &instance.Progress, &instance.Ratio, &updatedAt, &lastSync,
 		); err != nil {
 			return TorrentGroupDetail{}, err
 		}
+		instance.AddedAt = time.Unix(addedAt, 0).UTC()
 		instance.UpdatedAt = time.Unix(updatedAt, 0).UTC()
 		if lastSync.Valid {
 			value := time.Unix(lastSync.Int64, 0).UTC()
@@ -237,22 +280,46 @@ func (s *Store) GetTorrentGroup(ctx context.Context, id string, staleBefore time
 
 func (s *Store) instanceSites(ctx context.Context, instanceID string) ([]string, error) {
 	rows, err := s.db.QueryContext(ctx, `
-        SELECT DISTINCT COALESCE(s.display_name, 'Unknown · ' || tt.host_identity)
+        SELECT s.display_name, tt.host_identity
         FROM torrent_trackers tt LEFT JOIN sites s ON s.id = tt.site_id
-        WHERE tt.instance_id = ? ORDER BY 1`, instanceID)
+		WHERE tt.instance_id = ?`, instanceID)
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = rows.Close() }()
-	result := make([]string, 0)
+	unique := make(map[string]struct{})
 	for rows.Next() {
-		var value string
-		if err := rows.Scan(&value); err != nil {
+		var displayName sql.NullString
+		var rawHost string
+		if err := rows.Scan(&displayName, &rawHost); err != nil {
 			return nil, err
 		}
+		if displayName.Valid {
+			unique[displayName.String] = struct{}{}
+			continue
+		}
+		host, err := privacySafeTrackerHost(rawHost)
+		if err != nil {
+			unique["Unknown"] = struct{}{}
+			continue
+		}
+		unique["Unknown · "+host] = struct{}{}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	result := make([]string, 0, len(unique))
+	for value := range unique {
 		result = append(result, value)
 	}
-	return result, rows.Err()
+	sort.Slice(result, func(i, j int) bool {
+		left, right := strings.ToLower(result[i]), strings.ToLower(result[j])
+		if left != right {
+			return left < right
+		}
+		return result[i] < result[j]
+	})
+	return result, nil
 }
 
 type MergeGroupsParams struct {

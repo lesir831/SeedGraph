@@ -8,7 +8,23 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 )
+
+// time.Time's JSON encoding only supports years 0 through 9999. Treat larger
+// downloader timestamps as unknown so one corrupt remote value cannot break
+// every aggregate API response.
+const maxJSONUnixTimestamp int64 = 253402300799
+
+func parseTorrentAddedAt(unixSeconds int64) (time.Time, error) {
+	if unixSeconds < 0 {
+		return time.Time{}, errors.New("invalid added time")
+	}
+	if unixSeconds == 0 || unixSeconds > maxJSONUnixTimestamp {
+		return time.Time{}, nil
+	}
+	return time.Unix(unixSeconds, 0).UTC(), nil
+}
 
 // Kind identifies a supported downloader protocol.
 type Kind string
@@ -89,6 +105,7 @@ type Torrent struct {
 	DownloadedBytes    int64
 	UploadSpeed        int64
 	DownloadSpeed      int64
+	AddedAt            time.Time
 	TrackerURLs        []string
 }
 

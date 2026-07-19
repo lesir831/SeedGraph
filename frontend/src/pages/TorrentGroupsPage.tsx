@@ -1,12 +1,15 @@
 import {
+  ArrowDownOutlined,
+  ArrowUpOutlined,
   DeleteOutlined,
   DisconnectOutlined,
   FileOutlined,
   LockOutlined,
   MergeCellsOutlined,
+  QuestionCircleOutlined,
   ReloadOutlined,
   SafetyCertificateOutlined,
-	SwapOutlined,
+  SwapOutlined,
   UnlockOutlined,
 } from '@ant-design/icons'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
@@ -37,6 +40,8 @@ import { normalizePagedResponse, summarizeGroup } from '../api/transformers'
 import type {
   DeletePlan,
   GroupFilters,
+  GroupSortBy,
+  SortOrder,
   TorrentGroup,
   TorrentInstance,
 } from '../api/types'
@@ -44,7 +49,13 @@ import { PageHeader } from '../components/PageHeader'
 import { PageState } from '../components/PageState'
 import { displayError, formatBytes, formatDateTime, formatDeleteBlocker, formatPercent } from '../utils/format'
 
-const initialFilters: GroupFilters = { status: 'all', page: 1, pageSize: 20 }
+const initialFilters: GroupFilters = {
+  status: 'all',
+  sortBy: 'oldest_added_at',
+  sortOrder: 'asc',
+  page: 1,
+  pageSize: 20,
+}
 
 interface MergeFormValues {
   displayName: string
@@ -108,6 +119,7 @@ export function TorrentGroupsPage() {
   const invalidateGroups = async () => {
     await Promise.all([
       queryClient.invalidateQueries({ queryKey: ['torrent-groups'] }),
+      queryClient.invalidateQueries({ queryKey: ['torrent-group'] }),
       queryClient.invalidateQueries({ queryKey: ['overview'] }),
       queryClient.invalidateQueries({ queryKey: ['audit-events'] }),
     ])
@@ -237,10 +249,15 @@ export function TorrentGroupsPage() {
     {
       title: '下载器 / 任务',
       key: 'name',
+      width: 300,
       render: (_, instance) => (
-        <div className="primary-cell">
-          <strong>{instance.downloaderName}</strong>
-          <span title={instance.name}>{instance.name}</span>
+        <div className="primary-cell instance-name-cell">
+          <Tooltip title={instance.downloaderName} placement="topLeft">
+            <strong>{instance.downloaderName}</strong>
+          </Tooltip>
+          <Tooltip title={instance.name} placement="topLeft">
+            <span>{instance.name}</span>
+          </Tooltip>
         </div>
       ),
     },
@@ -273,6 +290,26 @@ export function TorrentGroupsPage() {
       dataIndex: 'ratio',
       width: 90,
       render: (ratio: number) => ratio.toFixed(2),
+    },
+    {
+      title: '站点 / Tracker',
+      key: 'sites',
+      width: 220,
+      render: (_, instance) => instance.sites.length ? (
+        <div className="instance-site-list">
+          {instance.sites.map((site) => (
+            <Tooltip key={site} title={site} placement="topLeft">
+              <Tag className="instance-site-tag">{site}</Tag>
+            </Tooltip>
+          ))}
+        </div>
+      ) : <Typography.Text type="secondary">暂无站点映射</Typography.Text>,
+    },
+    {
+      title: '添加时间',
+      dataIndex: 'addedAt',
+      width: 170,
+      render: formatDateTime,
     },
     {
       title: '操作',
@@ -315,14 +352,21 @@ export function TorrentGroupsPage() {
       {
         title: '聚合内容',
         key: 'name',
+        width: 360,
         render: (_, group) => (
           <div className="primary-cell group-name-cell">
-            <Space wrap size={6}>
-              <strong>{group.name}</strong>
-              {group.groupingMethod === 'manual' && <Tag color="purple">手动</Tag>}
-              {group.locked && <Tag icon={<LockOutlined />} color="gold">已锁定</Tag>}
-            </Space>
-            <span>{group.confidence === 'verified' ? '清单指纹已验证' : group.confidence === 'manual' ? '人工确认分组' : '待进一步验证的清单指纹'}</span>
+            <div className="group-title-row">
+              <Tooltip title={group.name} placement="topLeft">
+                <strong className="group-title-text">{group.name}</strong>
+              </Tooltip>
+              <div className="group-title-tags">
+                {group.groupingMethod === 'manual' && <Tag color="purple">手动</Tag>}
+                {group.locked && <Tag icon={<LockOutlined />} color="gold">已锁定</Tag>}
+              </div>
+            </div>
+            <span title={group.confidence === 'verified' ? '清单指纹已验证' : group.confidence === 'manual' ? '人工确认分组' : '待进一步验证的清单指纹'}>
+              {group.confidence === 'verified' ? '清单指纹已验证' : group.confidence === 'manual' ? '人工确认分组' : '待进一步验证的清单指纹'}
+            </span>
           </div>
         ),
       },
@@ -343,20 +387,24 @@ export function TorrentGroupsPage() {
           return (
             <div className="compact-metric">
               <strong>{summary.instanceCount} 个实例</strong>
-              <span>{summary.duplicateCount ? `含 ${summary.duplicateCount} 个副本` : '无重复副本'}</span>
+              <span>{summary.duplicateCount ? `另有 ${summary.duplicateCount} 个任务实例` : '无额外任务实例'}</span>
             </div>
           )
         },
       },
       {
-        title: '站点',
+        title: (
+          <Tooltip title="同一任务实例可以包含多个 Tracker，因此这个数量可能大于实例数。">
+            <Space size={4}>站点 / Tracker <QuestionCircleOutlined /></Space>
+          </Tooltip>
+        ),
         dataIndex: 'siteCount',
         width: 160,
-        render: (value: number) => value ? <Tag>{value} 个已识别站点</Tag> : <Typography.Text type="secondary">尚未识别</Typography.Text>,
+        render: (value: number) => value ? <Tag>{value} 个站点 / Tracker</Tag> : <Typography.Text type="secondary">暂无站点映射</Typography.Text>,
       },
       {
-        title: '更新时间',
-        dataIndex: 'updatedAt',
+        title: '最旧添加时间',
+        dataIndex: 'oldestAddedAt',
         width: 170,
         render: formatDateTime,
       },
@@ -416,7 +464,7 @@ export function TorrentGroupsPage() {
               pagination={false}
               columns={instanceColumns(group)}
               dataSource={group.instances}
-              scroll={{ x: 860 }}
+              scroll={{ x: 1300 }}
             />
             <details className="manifest-details">
               <summary><FileOutlined /> 分组依据与物理副本</summary>
@@ -449,7 +497,7 @@ export function TorrentGroupsPage() {
             >
               手动合并 {selectedGroupIds.length ? `(${selectedGroupIds.length})` : ''}
             </Button>
-            <Button icon={<ReloadOutlined spin={groups.isFetching} />} onClick={() => void groups.refetch()}>刷新</Button>
+            <Button icon={<ReloadOutlined spin={groups.isFetching} />} onClick={() => void invalidateGroups()}>刷新</Button>
           </>
         }
       />
@@ -514,9 +562,9 @@ export function TorrentGroupsPage() {
             className="filter-select"
             value={filters.maxSiteCount}
             options={[
-              { value: 0, label: '0 个已识别站点' },
-              { value: 1, label: '最多 1 个站点' },
-              { value: 2, label: '最多 2 个站点' },
+              { value: 0, label: '0 个站点 / Tracker' },
+              { value: 1, label: '最多 1 个站点 / Tracker' },
+              { value: 2, label: '最多 2 个站点 / Tracker' },
             ]}
             onChange={(maxSiteCount) => setFilters((current) => ({ ...current, maxSiteCount, page: 1 }))}
           />
@@ -537,6 +585,28 @@ export function TorrentGroupsPage() {
               { value: true, label: '需要刷新' },
             ]}
             onChange={(stale) => setFilters((current) => ({ ...current, stale, page: 1 }))}
+          />
+          <Select<GroupSortBy>
+            aria-label="排序字段"
+            className="group-sort-select"
+            value={filters.sortBy}
+            options={[
+              { value: 'oldest_added_at', label: '最旧种子添加时间' },
+              { value: 'instance_count', label: '实例数量' },
+              { value: 'size', label: '内容大小' },
+              { value: 'name', label: '名称' },
+            ]}
+            onChange={(sortBy) => setFilters((current) => ({ ...current, sortBy, page: 1 }))}
+          />
+          <Select<SortOrder>
+            aria-label="排序方向"
+            className="sort-order-select"
+            value={filters.sortOrder}
+            options={[
+              { value: 'asc', label: <><ArrowUpOutlined /> 升序</> },
+              { value: 'desc', label: <><ArrowDownOutlined /> 降序</> },
+            ]}
+            onChange={(sortOrder) => setFilters((current) => ({ ...current, sortOrder, page: 1 }))}
           />
         </Space>
       </Card>
@@ -561,7 +631,7 @@ export function TorrentGroupsPage() {
               },
             }}
             expandable={{ expandedRowRender: expandedRow }}
-            scroll={{ x: 1100 }}
+            scroll={{ x: 1230 }}
             pagination={{
               current: groups.data?.page ?? filters.page,
               pageSize: groups.data?.pageSize ?? filters.pageSize,

@@ -36,6 +36,7 @@ type TorrentRecord struct {
 	SourcePath          string
 	CanonicalPath       string
 	StorageID           string
+	AddedAt             time.Time
 	WantedBytes         int64
 	ManifestFingerprint string
 	SelectedFileCount   int
@@ -175,6 +176,16 @@ func (s *Store) upsertTorrentTx(ctx context.Context, tx *sql.Tx, torrent Torrent
 	if torrent.Confidence == "" {
 		torrent.Confidence = "tentative"
 	}
+	addedAt := sql.NullInt64{}
+	if !torrent.AddedAt.IsZero() {
+		addedAt.Int64 = torrent.AddedAt.Unix()
+		if addedAt.Int64 < 0 {
+			return false, fmt.Errorf("torrent added time must be non-negative")
+		}
+		// time.Time.MarshalJSON rejects years after 9999. A corrupt remote
+		// timestamp is unknown data, so use the first-seen fallback.
+		addedAt.Valid = torrent.AddedAt.Year() <= 9999
+	}
 	if _, err := tx.ExecContext(ctx, `
         INSERT INTO data_groups(
             id, auto_key, storage_id, canonical_path, wanted_bytes,
@@ -211,26 +222,27 @@ func (s *Store) upsertTorrentTx(ctx context.Context, tx *sql.Tx, torrent Torrent
 	}
 
 	var oldFingerprint string
-	var oldDeletedAt sql.NullInt64
+	var oldDeletedAt, oldAddedAt sql.NullInt64
 	err := tx.QueryRowContext(ctx, `
-        SELECT metadata_fingerprint, deleted_at FROM torrent_instances
-        WHERE downloader_id = ? AND stable_hash_key = ?`, torrent.DownloaderID, torrent.StableHashKey).
-		Scan(&oldFingerprint, &oldDeletedAt)
+		SELECT metadata_fingerprint, deleted_at, added_at FROM torrent_instances
+		WHERE downloader_id = ? AND stable_hash_key = ?`, torrent.DownloaderID, torrent.StableHashKey).
+		Scan(&oldFingerprint, &oldDeletedAt, &oldAddedAt)
 	newRecord := err == sql.ErrNoRows
 	if err != nil && err != sql.ErrNoRows {
 		return false, fmt.Errorf("read existing torrent: %w", err)
 	}
-	changed := newRecord || oldFingerprint != torrent.MetadataFingerprint || oldDeletedAt.Valid
+	changed := newRecord || oldFingerprint != torrent.MetadataFingerprint || oldDeletedAt.Valid ||
+		(addedAt.Valid && (!oldAddedAt.Valid || oldAddedAt.Int64 != addedAt.Int64))
 
 	if _, err := tx.ExecContext(ctx, `
         INSERT INTO torrent_instances(
             id, downloader_id, stable_hash_key, remote_id, name, source_path,
             canonical_path, storage_id, wanted_bytes, manifest_fingerprint,
             selected_file_count,
-            metadata_fingerprint, suggested_content_group_id, suggested_content_auto_key,
-            content_group_id, data_group_id, assignment_source,
-            first_seen_at, last_seen_at, deleted_at
-        ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'auto', ?, ?, NULL)
+			metadata_fingerprint, suggested_content_group_id, suggested_content_auto_key,
+			content_group_id, data_group_id, assignment_source,
+			added_at, first_seen_at, last_seen_at, deleted_at
+		) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'auto', COALESCE(?, ?), ?, ?, NULL)
         ON CONFLICT(downloader_id, stable_hash_key) DO UPDATE SET
             remote_id = excluded.remote_id,
             name = excluded.name,
@@ -248,17 +260,18 @@ func (s *Store) upsertTorrentTx(ctx context.Context, tx *sql.Tx, torrent Torrent
                 WHEN torrent_instances.assignment_source = 'manual' THEN torrent_instances.content_group_id
                 ELSE excluded.content_group_id
             END,
-            assignment_source = CASE
-                WHEN torrent_instances.assignment_source = 'manual' THEN 'manual'
-                ELSE 'auto'
-            END,
-            last_seen_at = excluded.last_seen_at,
+			assignment_source = CASE
+				WHEN torrent_instances.assignment_source = 'manual' THEN 'manual'
+				ELSE 'auto'
+			END,
+			added_at = COALESCE(?, torrent_instances.added_at, torrent_instances.first_seen_at),
+			last_seen_at = excluded.last_seen_at,
             deleted_at = NULL`,
 		torrent.ID, torrent.DownloaderID, torrent.StableHashKey, torrent.RemoteID,
 		torrent.Name, torrent.SourcePath, torrent.CanonicalPath, torrent.StorageID,
 		torrent.WantedBytes, torrent.ManifestFingerprint, torrent.SelectedFileCount, torrent.MetadataFingerprint,
 		torrent.ContentGroupID, torrent.ContentGroupAutoKey,
-		torrent.ContentGroupID, torrent.DataGroupID, now, now); err != nil {
+		torrent.ContentGroupID, torrent.DataGroupID, addedAt, now, now, now, addedAt); err != nil {
 		return false, fmt.Errorf("upsert torrent instance: %w", err)
 	}
 	if _, err := tx.ExecContext(ctx, `
@@ -288,13 +301,20 @@ func (s *Store) upsertTorrentTx(ctx context.Context, tx *sql.Tx, torrent Torrent
 			return false, fmt.Errorf("replace torrent trackers: %w", err)
 		}
 		for _, tracker := range torrent.Trackers {
+			hostIdentity, err := privacySafeTrackerHost(tracker.HostIdentity)
+			if err != nil {
+				// A malformed tracker identity is remote input. Ignore it rather than
+				// persisting or reflecting a value we cannot safely normalize.
+				continue
+			}
+			pathHint := sanitizeObservedTrackerPath(tracker.PathHint)
 			var siteID any
 			if tracker.SiteID != "" {
 				siteID = tracker.SiteID
 			}
 			if _, err := tx.ExecContext(ctx, `
                 INSERT OR IGNORE INTO torrent_trackers(instance_id, host_identity, path_hint, site_id)
-                VALUES(?, ?, ?, ?)`, torrent.ID, tracker.HostIdentity, tracker.PathHint, siteID); err != nil {
+				VALUES(?, ?, ?, ?)`, torrent.ID, hostIdentity, pathHint, siteID); err != nil {
 				return false, fmt.Errorf("insert torrent tracker identity: %w", err)
 			}
 		}

@@ -2,7 +2,9 @@ package store
 
 import (
 	"context"
+	"strings"
 	"testing"
+	"time"
 )
 
 func seedDownloader(t *testing.T, store *Store) Downloader {
@@ -104,5 +106,108 @@ func TestCursorAdvancesWithSuccessfulTransaction(t *testing.T) {
 	}
 	if got.SyncCursor != "2" {
 		t.Fatalf("cursor = %q, want 2", got.SyncCursor)
+	}
+}
+
+func TestSyncPersistsAddedAtAndUnknownDoesNotOverwrite(t *testing.T) {
+	store := openTestStore(t)
+	store.now = func() time.Time { return time.Unix(2000, 0).UTC() }
+	downloader := seedDownloader(t, store)
+	record := torrentRecord(downloader, "hash-added-at")
+	record.AddedAt = time.Unix(1000, 0).UTC()
+	ctx := context.Background()
+
+	if _, err := store.ApplySync(ctx, ApplySyncParams{
+		DownloaderID: downloader.ID, Mode: "full", Complete: true, Torrents: []TorrentRecord{record},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	record.AddedAt = time.Time{}
+	if _, err := store.ApplySync(ctx, ApplySyncParams{
+		DownloaderID: downloader.ID, Mode: "delta", Torrents: []TorrentRecord{record},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var addedAt int64
+	if err := store.db.QueryRow("SELECT added_at FROM torrent_instances WHERE id = ?", record.ID).Scan(&addedAt); err != nil {
+		t.Fatal(err)
+	}
+	if addedAt != 1000 {
+		t.Fatalf("added_at = %d after unknown update, want 1000", addedAt)
+	}
+
+	record.AddedAt = time.Unix(900, 0).UTC()
+	if _, err := store.ApplySync(ctx, ApplySyncParams{
+		DownloaderID: downloader.ID, Mode: "delta", Torrents: []TorrentRecord{record},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.db.QueryRow("SELECT added_at FROM torrent_instances WHERE id = ?", record.ID).Scan(&addedAt); err != nil {
+		t.Fatal(err)
+	}
+	if addedAt != 900 {
+		t.Fatalf("added_at = %d after valid update, want 900", addedAt)
+	}
+}
+
+func TestSyncRejectsNegativeAddedAt(t *testing.T) {
+	store := openTestStore(t)
+	downloader := seedDownloader(t, store)
+	record := torrentRecord(downloader, "hash-negative-added-at")
+	record.AddedAt = time.Unix(-1, 0).UTC()
+	if _, err := store.ApplySync(context.Background(), ApplySyncParams{
+		DownloaderID: downloader.ID, Mode: "full", Complete: true, Torrents: []TorrentRecord{record},
+	}); err == nil {
+		t.Fatal("ApplySync() accepted a negative added time")
+	}
+}
+
+func TestSyncNeverPersistsTrackerSecretsFromHostOrPath(t *testing.T) {
+	database := openTestStore(t)
+	downloader := seedDownloader(t, database)
+	secret := "a91f3c7e5b2d8046a91f3c7e5b2d8046"
+	record := torrentRecord(downloader, "host-passkey")
+	// Exercise the store boundary directly: callers must not be able to bypass
+	// TrackerIdentity and persist remote tracker material verbatim.
+	record.Trackers = []TrackerRecord{{
+		HostIdentity: secret + ".tracker.example.com",
+		PathHint:     "/announce/" + secret + "?passkey=" + secret,
+	}}
+	if _, err := database.ApplySync(context.Background(), ApplySyncParams{
+		DownloaderID: downloader.ID, Mode: "full", Complete: true, Torrents: []TorrentRecord{record},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	var host, path string
+	if err := database.db.QueryRow(`
+		SELECT host_identity, path_hint FROM torrent_trackers WHERE instance_id = ?`, record.ID).
+		Scan(&host, &path); err != nil {
+		t.Fatal(err)
+	}
+	if host != "_redacted.tracker.example.com" || path != "/announce/*" ||
+		strings.Contains(host+path, secret) || strings.Contains(host+path, "passkey") {
+		t.Fatalf("unsafe persisted tracker identity: host=%q path=%q", host, path)
+	}
+}
+
+func TestSyncFallsBackForUnencodableAddedAt(t *testing.T) {
+	store := openTestStore(t)
+	store.now = func() time.Time { return time.Unix(2000, 0).UTC() }
+	downloader := seedDownloader(t, store)
+	record := torrentRecord(downloader, "hash-unencodable-added-at")
+	record.AddedAt = time.Unix(253402300800, 0).UTC()
+
+	if _, err := store.ApplySync(context.Background(), ApplySyncParams{
+		DownloaderID: downloader.ID, Mode: "full", Complete: true, Torrents: []TorrentRecord{record},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var addedAt int64
+	if err := store.db.QueryRow("SELECT added_at FROM torrent_instances WHERE id = ?", record.ID).Scan(&addedAt); err != nil {
+		t.Fatal(err)
+	}
+	if addedAt != 2000 {
+		t.Fatalf("added_at = %d, want first-seen fallback 2000", addedAt)
 	}
 }

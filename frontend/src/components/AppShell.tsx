@@ -34,7 +34,7 @@ const routeTitles: Record<string, string> = {
 function Brand() {
   return (
     <div className="brand">
-      <span className="brand-mark"><NodeIndexOutlined /></span>
+      <span className="brand-mark"><img src="/seedgraph-icon.png" alt="" /></span>
       <div>
         <strong>SeedGraph</strong>
         <span>种子关系控制台</span>

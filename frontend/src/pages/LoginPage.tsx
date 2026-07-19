@@ -1,4 +1,4 @@
-import { LockOutlined, NodeIndexOutlined, SafetyCertificateOutlined, UserOutlined } from '@ant-design/icons'
+import { LockOutlined, SafetyCertificateOutlined, UserOutlined } from '@ant-design/icons'
 import { Alert, Button, Card, Form, Input, Space, Typography } from 'antd'
 import { useState } from 'react'
 import { Navigate, useLocation, useNavigate } from 'react-router-dom'
@@ -36,7 +36,7 @@ export function LoginPage() {
   return (
     <main className="login-page">
       <section className="login-story" aria-label="产品介绍">
-        <div className="login-brand"><NodeIndexOutlined /> SeedGraph</div>
+        <div className="login-brand"><img src="/seedgraph-icon.png" alt="" /> SeedGraph</div>
         <div className="story-content">
           <Typography.Title>让散落的种子任务<br />重新连成一张图。</Typography.Title>
           <Typography.Paragraph>
@@ -54,7 +54,7 @@ export function LoginPage() {
 
       <section className="login-panel">
         <Card className="login-card" bordered={false}>
-          <div className="login-icon"><NodeIndexOutlined /></div>
+          <div className="login-icon"><img src="/seedgraph-icon.png" alt="" /></div>
           <Typography.Title level={2}>登录控制台</Typography.Title>
           <Typography.Paragraph type="secondary">使用 SeedGraph 管理员账号继续</Typography.Paragraph>
 

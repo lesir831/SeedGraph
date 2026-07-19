@@ -10,6 +10,7 @@ import {
   toSyncStatus,
   toTorrentGroup,
   toTrackerRule,
+  toUnmappedTrackerIdentity,
   type WireAuditEvent,
   type WireAuthSession,
   type WireDeleteJob,
@@ -20,6 +21,7 @@ import {
   type WireSyncStatus,
   type WireTorrentGroup,
   type WireTrackerRule,
+  type WireUnmappedTrackerIdentity,
 } from './transformers'
 import type {
   AuditEvent,
@@ -42,6 +44,7 @@ import type {
   TorrentGroup,
   TrackerRule,
   TrackerRuleInput,
+  UnmappedTrackerIdentity,
 	UndoGroupOperationResult,
 } from './types'
 
@@ -168,6 +171,8 @@ export const api = {
         missing_site: filters.missingSite,
         max_site_count: filters.maxSiteCount,
         stale: filters.stale,
+        sort_by: filters.sortBy,
+        sort_order: filters.sortOrder,
         ...getPage(filters.page, filters.pageSize),
       },
     })
@@ -286,6 +291,8 @@ export const api = {
 
   getTrackerRules: async (): Promise<TrackerRule[]> =>
     ((await request<WireTrackerRule[] | null>('/tracker-rules')) ?? []).map(toTrackerRule),
+  getUnmappedTrackers: async (): Promise<UnmappedTrackerIdentity[]> =>
+    ((await request<WireUnmappedTrackerIdentity[] | null>('/tracker-rules/unmapped')) ?? []).map(toUnmappedTrackerIdentity),
   createTrackerRule: async (input: TrackerRuleInput): Promise<TrackerRule> => {
     const wire = await request<WireTrackerRule>('/tracker-rules', {
       method: 'POST',

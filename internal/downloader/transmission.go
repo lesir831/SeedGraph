@@ -31,6 +31,7 @@ var transmissionTorrentFields = []string{
 	"rate_upload",
 	"rate_download",
 	"status",
+	"added_date",
 	"files",
 	"wanted",
 	"tracker_stats",
@@ -376,6 +377,14 @@ func transmissionRecordToTorrent(record map[string]json.RawMessage) (Torrent, er
 	if err != nil {
 		return Torrent{}, errors.New("transmission torrent_get: invalid status")
 	}
+	addedDate, err := rawInt64(record["added_date"])
+	if err != nil {
+		return Torrent{}, errors.New("transmission torrent_get: invalid added time")
+	}
+	addedAt, err := parseTorrentAddedAt(addedDate)
+	if err != nil {
+		return Torrent{}, errors.New("transmission torrent_get: invalid added time")
+	}
 
 	selectedSizes, selectedKnown, err := transmissionSelectedFileSizes(record["files"], record["wanted"])
 	if err != nil {
@@ -413,6 +422,7 @@ func transmissionRecordToTorrent(record map[string]json.RawMessage) (Torrent, er
 		DownloadedBytes:    maxInt64(downloaded, 0),
 		UploadSpeed:        maxInt64(uploadSpeed, 0),
 		DownloadSpeed:      maxInt64(downloadSpeed, 0),
+		AddedAt:            addedAt,
 		TrackerURLs:        trackerURLs,
 	}, nil
 }
