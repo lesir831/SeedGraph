@@ -596,7 +596,7 @@ func isSensitiveTrackerHostLabel(label string) bool {
 		default:
 			alphaNumeric = false
 		}
-		if !((character >= 'a' && character <= 'f') || (character >= '0' && character <= '9')) {
+		if (character < 'a' || character > 'f') && (character < '0' || character > '9') {
 			hexOnly = false
 		}
 	}
