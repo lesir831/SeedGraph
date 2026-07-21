@@ -86,6 +86,7 @@ func (s *Server) Handler(frontend http.Handler) http.Handler {
 			protected.Post("/auth/logout", s.logout)
 			protected.Get("/overview", s.overview)
 			protected.Get("/torrent-groups", s.listGroups)
+			protected.Post("/torrent-groups/query", s.queryGroups)
 			protected.Get("/torrent-groups/site-options", s.listGroupSiteOptions)
 			protected.Get("/torrent-groups/{id}", s.getGroup)
 			protected.Post("/torrent-groups/merge", s.mergeGroups)

@@ -55,6 +55,7 @@ import type {
   UnmappedTrackerIdentity,
 	UndoGroupOperationResult,
 } from './types'
+import { groupQueryFilterForWire } from '../utils/groupQuery'
 
 const API_ROOT = '/api/v1'
 const TOKEN_KEY = 'seedgraph.access-token'
@@ -177,20 +178,29 @@ export const api = {
   getOverview: async (): Promise<OverviewData> => toOverview(await request<WireOverview>('/overview')),
 
   getGroups: async (filters: GroupFilters): Promise<PagedResponse<TorrentGroup>> => {
+    if (filters.filter) {
+      const wireFilter = groupQueryFilterForWire(filters.filter)
+      if (!wireFilter) throw new Error('高级搜索条件无效，已阻止发送不完整查询')
+      const wire = await request<WirePagedResponse<WireTorrentGroup> | WireTorrentGroup[]>('/torrent-groups/query', {
+        method: 'POST',
+        body: json({
+          filter: wireFilter,
+          q: filters.query,
+          status: filters.status === 'all' ? undefined : filters.status,
+          downloader_id: filters.downloaderId,
+          sorts: filters.sorts,
+          timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC',
+          limit: filters.pageSize,
+          offset: (filters.page - 1) * filters.pageSize,
+        }),
+      })
+      return normalizeWirePage(wire, toTorrentGroup, filters.page, filters.pageSize)
+    }
     const wire = await request<WirePagedResponse<WireTorrentGroup> | WireTorrentGroup[]>('/torrent-groups', {
       query: {
         q: filters.query,
-        name_contains: filters.nameContains,
-        site_all: filters.requiredSites,
-        site_none: filters.excludedSites,
-        size_lt: filters.sizeLT,
-        oldest_added_gte: filters.oldestAddedGte,
-        oldest_added_lt: filters.oldestAddedLt,
         status: filters.status === 'all' ? undefined : filters.status,
         downloader_id: filters.downloaderId,
-        missing_site: filters.missingSite,
-        max_site_count: filters.maxSiteCount,
-        stale: filters.stale,
         sort: filters.sorts?.map((rule) => `${rule.field}:${rule.order}`),
         sort_by: filters.sorts?.length ? undefined : filters.sortBy,
         sort_order: filters.sorts?.length ? undefined : filters.sortOrder,

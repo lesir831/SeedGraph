@@ -91,19 +91,80 @@ export interface GroupSortRule {
   order: SortOrder
 }
 
+export type GroupQueryCombinator = 'and' | 'or'
+export type GroupQueryField =
+  | 'group_name'
+  | 'instance_name'
+  | 'path'
+  | 'size'
+  | 'instance_count'
+  | 'site_count'
+  | 'downloader_count'
+  | 'data_copy_count'
+  | 'oldest_added_at'
+  | 'updated_at'
+  | 'site'
+  | 'downloader'
+  | 'state'
+  | 'locked'
+  | 'grouping_method'
+  | 'confidence'
+  | 'stale'
+  | 'has_unmapped_tracker'
+export type GroupQueryOperator =
+  | 'contains'
+  | 'not_contains'
+  | 'starts_with'
+  | 'ends_with'
+  | 'eq'
+  | 'ne'
+  | 'lt'
+  | 'lte'
+  | 'gt'
+  | 'gte'
+  | 'between'
+  | 'before'
+  | 'after'
+  | 'on'
+  | 'on_or_before'
+  | 'on_or_after'
+  | 'in'
+  | 'contains_all'
+  | 'not_in'
+  | 'is_empty'
+  | 'is_not_empty'
+export type GroupSizeUnit = 'B' | 'KiB' | 'MiB' | 'GiB' | 'TiB'
+export type GroupQueryValue = string | number | boolean | string[] | number[]
+
+export interface GroupQueryCondition {
+  type: 'condition'
+  field: GroupQueryField
+  operator: GroupQueryOperator
+  value?: GroupQueryValue
+  /** UI-only hint; the API encoder deliberately removes it. */
+  displayUnit?: GroupSizeUnit
+}
+
+export interface GroupQueryGroup {
+  type: 'group'
+  combinator: GroupQueryCombinator
+  scope?: 'instance'
+  negated?: boolean
+  children: GroupQueryNode[]
+}
+
+export type GroupQueryNode = GroupQueryCondition | GroupQueryGroup
+
+export interface GroupQueryFilter {
+  version: 1
+  root: GroupQueryGroup
+}
+
 export interface GroupFilters {
   query?: string
-  nameContains?: string
-  requiredSites?: string[]
-  excludedSites?: string[]
-  sizeLT?: number
-  oldestAddedGte?: string
-  oldestAddedLt?: string
+  filter?: GroupQueryFilter
   status?: string
   downloaderId?: string
-  missingSite?: string
-  maxSiteCount?: number
-  stale?: boolean
   sorts?: GroupSortRule[]
   /** @deprecated Use sorts for ordered multi-column sorting. */
   sortBy?: GroupSortBy

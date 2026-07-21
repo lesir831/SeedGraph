@@ -37,7 +37,6 @@ import {
   Typography,
   type TableColumnsType,
 } from 'antd'
-import dayjs from 'dayjs'
 import { useMemo, useState, type Key, type ReactNode } from 'react'
 import { api } from '../api/client'
 import { normalizePagedResponse } from '../api/transformers'
@@ -54,6 +53,7 @@ import { GroupSortDrawer } from '../components/GroupSortDrawer'
 import { PageHeader } from '../components/PageHeader'
 import { PageState } from '../components/PageState'
 import { displayError, formatBytes, formatDateTime, formatDeleteBlocker, formatPercent } from '../utils/format'
+import { countGroupQueryConditions, summarizeGroupQuery } from '../utils/groupQuery'
 import { GROUP_SORT_LABELS, loadGroupSorts, saveGroupSorts } from '../utils/groupSortPreferences'
 
 const initialFilters: GroupFilters = {
@@ -202,18 +202,14 @@ export function TorrentGroupsPage() {
   const siteLabels = useMemo(() => new Map(
     [...pageSiteOptions, ...siteOptions].map((site) => [site.key, site.label]),
   ), [pageSiteOptions, siteOptions])
-  const formatSiteFilters = (keys: string[], separator = '、') => keys.map((key) => siteLabels.get(key) ?? key).join(separator)
-
-  const advancedFilterCount = [
-    filters.nameContains,
-    filters.requiredSites?.length,
-    filters.excludedSites?.length,
-    filters.sizeLT,
-    filters.oldestAddedGte || filters.oldestAddedLt,
-    filters.maxSiteCount !== undefined,
-    filters.missingSite,
-    filters.stale !== undefined,
-  ].filter(Boolean).length
+  const downloaderLabels = useMemo(() => new Map(
+    (downloaders.data ?? []).map((downloader) => [downloader.id, downloader.name]),
+  ), [downloaders.data])
+  const advancedFilterCount = countGroupQueryConditions(filters.filter)
+  const advancedFilterSummary = summarizeGroupQuery(filters.filter, {
+    sites: siteLabels,
+    downloaders: downloaderLabels,
+  })
 
   const invalidateGroups = async () => {
     await Promise.all([
@@ -754,48 +750,19 @@ export function TorrentGroupsPage() {
         </div>
         <div className="group-filter-summary">
           <span className="sort-summary"><SortAscendingOutlined /> {groupSortSummary(filters.sorts ?? [])}</span>
-          {filters.nameContains && (
-            <Tag closable onClose={() => setFilters((current) => ({ ...current, nameContains: undefined, page: 1 }))}>
-              名称包含：{filters.nameContains}
-            </Tag>
-          )}
-          {filters.requiredSites?.length ? (
-            <Tag closable color="blue" onClose={() => setFilters((current) => ({ ...current, requiredSites: undefined, page: 1 }))}>
-              同时包含：{formatSiteFilters(filters.requiredSites, ' + ')}
-            </Tag>
-          ) : null}
-          {filters.excludedSites?.length ? (
-            <Tag closable color="volcano" onClose={() => setFilters((current) => ({ ...current, excludedSites: undefined, page: 1 }))}>
-              排除：{formatSiteFilters(filters.excludedSites)}
-            </Tag>
-          ) : null}
-          {filters.sizeLT ? (
-            <Tag closable onClose={() => setFilters((current) => ({ ...current, sizeLT: undefined, page: 1 }))}>
-              大小 &lt; {formatBytes(filters.sizeLT)}
-            </Tag>
-          ) : null}
-          {(filters.oldestAddedGte || filters.oldestAddedLt) && (
-            <Tag
-              closable
-              onClose={() => setFilters((current) => ({ ...current, oldestAddedGte: undefined, oldestAddedLt: undefined, page: 1 }))}
-            >
-              最旧添加：{filters.oldestAddedGte?.slice(0, 10)} ～ {filters.oldestAddedLt ? dayjs(filters.oldestAddedLt).subtract(1, 'day').format('YYYY-MM-DD') : ''}
-            </Tag>
-          )}
-          {filters.maxSiteCount !== undefined && (
-            <Tag closable onClose={() => setFilters((current) => ({ ...current, maxSiteCount: undefined, page: 1 }))}>
-              站点数 ≤ {filters.maxSiteCount}
-            </Tag>
-          )}
-          {filters.missingSite && (
-            <Tag closable onClose={() => setFilters((current) => ({ ...current, missingSite: undefined, page: 1 }))}>
-              缺少站点：{filters.missingSite}
-            </Tag>
-          )}
-          {filters.stale !== undefined && (
-            <Tag closable onClose={() => setFilters((current) => ({ ...current, stale: undefined, page: 1 }))}>
-              {filters.stale ? '需要刷新' : '快照新鲜'}
-            </Tag>
+          {advancedFilterCount > 0 && (
+            <div className="advanced-filter-summary">
+              <Tag
+                color="blue"
+                closable
+                onClose={() => setFilters((current) => ({ ...current, filter: undefined, page: 1 }))}
+              >
+                高级条件 {advancedFilterCount} 条
+              </Tag>
+              <Tooltip title={advancedFilterSummary} placement="bottomLeft">
+                <Typography.Text ellipsis>{advancedFilterSummary}</Typography.Text>
+              </Tooltip>
+            </div>
           )}
         </div>
       </Card>
@@ -852,13 +819,15 @@ export function TorrentGroupsPage() {
 
       <GroupAdvancedSearchDrawer
         open={advancedSearchOpen}
-        filters={filters}
+        filter={filters.filter}
         siteOptions={siteOptions}
         siteOptionsLoading={groupSiteOptions.isLoading}
         siteOptionsError={groupSiteOptions.isError}
+        downloaders={downloaders.data ?? []}
+        downloadersLoading={downloaders.isLoading}
         onRetrySiteOptions={() => void groupSiteOptions.refetch()}
         onClose={() => setAdvancedSearchOpen(false)}
-        onApply={(advancedFilters) => setFilters((current) => ({ ...current, ...advancedFilters, page: 1 }))}
+        onApply={(filter) => setFilters((current) => ({ ...current, filter, page: 1 }))}
       />
       <GroupSortDrawer
         open={sortDrawerOpen}

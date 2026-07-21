@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/go-chi/chi/v5"
@@ -173,5 +174,105 @@ func TestListGroupsValidatesSortQuery(t *testing.T) {
 	}
 	if optionsPayload.Data == nil || len(optionsPayload.Data) != 0 {
 		t.Fatalf("empty site options = %+v, want non-nil empty list", optionsPayload.Data)
+	}
+}
+
+func TestQueryGroupsAcceptsStructuredFilterSortsAndPagination(t *testing.T) {
+	database, err := store.Open(context.Background(), t.TempDir()+"/seedgraph.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = database.Close() })
+	server := &Server{store: database, logger: slog.Default()}
+	body := `{
+		"filter":{
+			"version":1,
+			"root":{"type":"group","combinator":"and","children":[
+				{"type":"condition","field":"size","operator":"gte","value":0},
+				{"type":"group","scope":"instance","combinator":"or","negated":false,"children":[
+					{"type":"condition","field":"state","operator":"in","value":["seeding","paused"]}
+				]}
+			]}
+		},
+		"q":"show",
+		"status":"seeding",
+		"downloader_id":"downloader-id",
+		"sorts":[{"field":"instance_count","order":"desc"},{"field":"size","order":"asc"}],
+		"limit":17,
+		"offset":3
+	}`
+	response := httptest.NewRecorder()
+	server.queryGroups(response, httptest.NewRequest(http.MethodPost, "/torrent-groups/query", strings.NewReader(body)))
+	if response.Code != http.StatusOK {
+		t.Fatalf("query status = %d, body = %s", response.Code, response.Body.String())
+	}
+	var payload struct {
+		Data struct {
+			Items  []store.TorrentGroup `json:"items"`
+			Total  int                  `json:"total"`
+			Limit  int                  `json:"limit"`
+			Offset int                  `json:"offset"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.Data.Items == nil || payload.Data.Total != 0 || payload.Data.Limit != 17 || payload.Data.Offset != 3 {
+		t.Fatalf("unexpected query page: %+v", payload.Data)
+	}
+}
+
+func TestQueryGroupsRejectsInvalidOrOversizedDocuments(t *testing.T) {
+	database, err := store.Open(context.Background(), t.TempDir()+"/seedgraph.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = database.Close() })
+	server := &Server{store: database, logger: slog.Default()}
+
+	tooDeep := `{"filter":{"version":1,"root":{"type":"group","combinator":"and","children":[` +
+		`{"type":"group","combinator":"and","children":[` +
+		`{"type":"group","combinator":"and","children":[` +
+		`{"type":"group","combinator":"and","children":[` +
+		`{"type":"condition","field":"group_name","operator":"eq","value":"x"}` +
+		`]}]}]}]}}}`
+	validFilter := `"filter":{"version":1,"root":{"type":"group","combinator":"and","children":[` +
+		`{"type":"condition","field":"size","operator":"gte","value":0}]}}`
+	tests := []string{
+		``,
+		`not-json`,
+		`null`,
+		`{}`,
+		`{"filter":null}`,
+		`{} {}`,
+		`{"unknown":true}`,
+		`{` + validFilter + `,"limit":201}`,
+		`{` + validFilter + `,"offset":-1}`,
+		`{` + validFilter + `,"sorts":[{"field":"private_hash","order":"asc"}]}`,
+		`{` + validFilter + `,"sorts":[{"field":"name"}]}`,
+		`{` + validFilter + `,"timezone":"Mars/Olympus_Mons"}`,
+		`{"filter":{"version":2,"root":{"type":"group","combinator":"and","children":[]}}}`,
+		`{"filter":{"version":1,"root":{"type":"group","combinator":"and","children":[],"sql":"1=1"}}}`,
+		`{"filter":{"version":1,"root":{"type":"group","combinator":"and","children":[{"type":"condition","field":"private_hash","operator":"eq","value":"secret"}]}}}`,
+		`{"filter":{"version":1,"root":{"type":"group","combinator":"and","children":[{"type":"condition","field":"size","operator":"gte","value":1.25}]}}}`,
+		`{"filter":{"version":1,"root":{"type":"group","combinator":"and","children":[{"type":"condition","field":"locked","operator":"eq","value":"false"}]}}}`,
+		tooDeep,
+	}
+	for _, body := range tests {
+		response := httptest.NewRecorder()
+		server.queryGroups(response, httptest.NewRequest(http.MethodPost, "/torrent-groups/query", strings.NewReader(body)))
+		if response.Code != http.StatusBadRequest {
+			t.Fatalf("POST body %q status = %d, body = %s", body, response.Code, response.Body.String())
+		}
+		if strings.Contains(response.Body.String(), "secret") {
+			t.Fatalf("error response echoed filter value: %s", response.Body.String())
+		}
+	}
+
+	oversized := `{"q":"` + strings.Repeat("x", maxTorrentGroupQueryRequestBytes) + `"}`
+	response := httptest.NewRecorder()
+	server.queryGroups(response, httptest.NewRequest(http.MethodPost, "/torrent-groups/query", strings.NewReader(oversized)))
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("oversized query status = %d, body = %s", response.Code, response.Body.String())
 	}
 }

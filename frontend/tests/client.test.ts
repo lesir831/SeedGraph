@@ -37,7 +37,7 @@ describe('torrent group API', () => {
     expect(requestUrl.searchParams.has('status')).toBe(false)
   })
 
-  it('sends advanced filters and preserves multi-sort priority with repeated parameters', async () => {
+  it('sends structured advanced filters in a POST body with sort priority preserved', async () => {
     const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
       items: [],
       total: 0,
@@ -50,40 +50,84 @@ describe('torrent group API', () => {
 
     await api.getGroups({
       status: 'all',
-      nameContains: 'Ubuntu',
-      requiredSites: ['site:site-a', 'site:site-b'],
-      excludedSites: ['tracker:tracker.site-c.example'],
-      sizeLT: 1_073_741_824,
-      oldestAddedGte: '2026-07-01T00:00:00+08:00',
-      oldestAddedLt: '2026-08-01T00:00:00+08:00',
+      query: 'Ubuntu',
+      filter: {
+        version: 1,
+        root: {
+          type: 'group',
+          combinator: 'and',
+          children: [
+            { type: 'condition', field: 'size', operator: 'lt', value: 1_073_741_824, displayUnit: 'GiB' },
+            {
+              type: 'group',
+              combinator: 'or',
+              negated: true,
+              children: [
+                { type: 'condition', field: 'site', operator: 'in', value: ['site:site-a'] },
+                { type: 'condition', field: 'site', operator: 'in', value: ['site:site-b'] },
+              ],
+            },
+          ],
+        },
+      },
       sorts: [
         { field: 'instance_count', order: 'desc' },
         { field: 'oldest_added_at', order: 'desc' },
         { field: 'size', order: 'asc' },
       ],
-      // Multi-sort takes precedence while these legacy fields remain accepted.
-      sortBy: 'name',
-      sortOrder: 'asc',
       page: 1,
       pageSize: 20,
     })
 
-    const requestInput = fetchMock.mock.calls[0][0]
+    const [requestInput, requestOptions] = fetchMock.mock.calls[0]
     if (typeof requestInput !== 'string') throw new TypeError('expected the API client to call fetch with a URL string')
     const requestUrl = new URL(requestInput, window.location.origin)
-    expect(requestUrl.searchParams.get('name_contains')).toBe('Ubuntu')
-    expect(requestUrl.searchParams.getAll('site_all')).toEqual(['site:site-a', 'site:site-b'])
-    expect(requestUrl.searchParams.getAll('site_none')).toEqual(['tracker:tracker.site-c.example'])
-    expect(requestUrl.searchParams.get('size_lt')).toBe('1073741824')
-    expect(requestUrl.searchParams.get('oldest_added_gte')).toBe('2026-07-01T00:00:00+08:00')
-    expect(requestUrl.searchParams.get('oldest_added_lt')).toBe('2026-08-01T00:00:00+08:00')
-    expect(requestUrl.searchParams.getAll('sort')).toEqual([
-      'instance_count:desc',
-      'oldest_added_at:desc',
-      'size:asc',
+    expect(requestUrl.pathname).toBe('/api/v1/torrent-groups/query')
+    expect(requestOptions?.method).toBe('POST')
+    if (typeof requestOptions?.body !== 'string') throw new TypeError('expected a JSON request body')
+    const body = JSON.parse(requestOptions.body) as {
+      q?: string
+      limit: number
+      offset: number
+      timezone: string
+      sorts: Array<{ field: string; order: string }>
+      filter: { root: { children: Array<Record<string, unknown>> } }
+    }
+    expect(body.q).toBe('Ubuntu')
+    expect(body.limit).toBe(20)
+    expect(body.offset).toBe(0)
+    expect(typeof body.timezone).toBe('string')
+    expect(body.timezone.length).toBeGreaterThan(0)
+    expect(body.sorts).toEqual([
+      { field: 'instance_count', order: 'desc' },
+      { field: 'oldest_added_at', order: 'desc' },
+      { field: 'size', order: 'asc' },
     ])
-    expect(requestUrl.searchParams.has('sort_by')).toBe(false)
-    expect(requestUrl.searchParams.has('sort_order')).toBe(false)
+    expect(body.filter.root.children[0]).toEqual({
+      type: 'condition', field: 'size', operator: 'lt', value: 1_073_741_824,
+    })
+    expect(body.filter.root.children[1]).toMatchObject({ type: 'group', combinator: 'or', negated: true })
+    expect(JSON.stringify(body)).not.toContain('displayUnit')
+  })
+
+  it('fails closed without making a request when an advanced AST is invalid', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+
+    await expect(api.getGroups({
+      status: 'all',
+      filter: {
+        version: 1,
+        root: {
+          type: 'group',
+          combinator: 'and',
+          children: [{ type: 'condition', field: 'size', operator: 'between', value: [1024] }],
+        },
+      },
+      page: 1,
+      pageSize: 20,
+    })).rejects.toThrow('高级搜索条件无效')
+
+    expect(fetchMock).not.toHaveBeenCalled()
   })
 
   it('loads stable group site filter options', async () => {

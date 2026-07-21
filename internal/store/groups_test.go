@@ -3,11 +3,32 @@ package store
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"slices"
 	"testing"
 	"time"
 )
+
+func groupQueryCondition(t *testing.T, field, operator string, value any) TorrentGroupQueryNode {
+	t.Helper()
+	var raw json.RawMessage
+	if value != nil {
+		encoded, err := json.Marshal(value)
+		if err != nil {
+			t.Fatal(err)
+		}
+		raw = encoded
+	}
+	return TorrentGroupQueryNode{Type: "condition", Field: field, Operator: operator, Value: raw}
+}
+
+func groupQueryDocument(children ...TorrentGroupQueryNode) *TorrentGroupQuery {
+	return &TorrentGroupQuery{
+		Version: 1,
+		Root:    &TorrentGroupQueryNode{Type: "group", Combinator: "and", Children: children},
+	}
+}
 
 func operationTestRecord(downloader Downloader, hash, groupID string) TorrentRecord {
 	record := torrentRecord(downloader, hash)
@@ -394,6 +415,233 @@ func TestListTorrentGroupsRejectsInvalidAdvancedFilters(t *testing.T) {
 	} {
 		if _, _, err := store.ListTorrentGroups(context.Background(), filters); !errors.Is(err, ErrInvalidGroupFilter) {
 			t.Fatalf("ListTorrentGroups(%+v) error = %v, want ErrInvalidGroupFilter", filters, err)
+		}
+	}
+}
+
+func TestListTorrentGroupsStructuredQueryUsesBoundParametersAndCorrectMultiInstanceSemantics(t *testing.T) {
+	store := openTestStore(t)
+	store.now = func() time.Time { return time.Date(2026, time.July, 21, 12, 0, 0, 0, time.UTC) }
+	transmission := seedDownloader(t, store)
+	qbittorrent, err := store.CreateDownloader(context.Background(), CreateDownloaderParams{
+		Name: "qBittorrent", Kind: "qbittorrent", BaseURL: "http://qb:8080",
+		StorageID: transmission.StorageID, StorageName: "media", Enabled: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	record := func(downloader Downloader, hash, groupID, name, path, state, tracker string, size, addedAt int64) TorrentRecord {
+		item := operationTestRecord(downloader, hash, groupID)
+		item.Name = name
+		item.CanonicalPath = path
+		item.WantedBytes = size
+		item.AddedAt = time.Unix(addedAt, 0).UTC()
+		item.Runtime.Status = state
+		item.Trackers = []TrackerRecord{{HostIdentity: tracker}}
+		return item
+	}
+	first := record(
+		transmission, "episode-one", "group-series", "Series Episode 01", "/shows/series/episode01",
+		"seeding", "tracker.alpha.example", 100, 100,
+	)
+	second := record(
+		qbittorrent, "episode-two", "group-series", "Series Episode 02", "/shows/series/episode02",
+		"paused", "tracker.beta.example", 200, 200,
+	)
+	injectionText := `%\' OR 1=1 --`
+	injection := record(
+		transmission, "injection", "group-injection", "Literal "+injectionText,
+		"/shows/literal", "seeding", "tracker.literal.example", 50, 300,
+	)
+	other := record(
+		transmission, "other", "group-other", "Other", "/movies/other",
+		"seeding", "tracker.other.example", 500, 400,
+	)
+	if _, err := store.ApplySync(context.Background(), ApplySyncParams{
+		DownloaderID: transmission.ID, Mode: "full", Complete: true,
+		Torrents: []TorrentRecord{first, injection, other},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.ApplySync(context.Background(), ApplySyncParams{
+		DownloaderID: qbittorrent.ID, Mode: "full", Complete: true, Torrents: []TorrentRecord{second},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	assertIDs := func(t *testing.T, query *TorrentGroupQuery, expected ...string) {
+		t.Helper()
+		groups, total, err := store.ListTorrentGroups(context.Background(), GroupFilters{Query: query, Limit: 50})
+		if err != nil {
+			t.Fatal(err)
+		}
+		actual := make([]string, 0, len(groups))
+		for _, group := range groups {
+			actual = append(actual, group.ID)
+		}
+		slices.Sort(actual)
+		slices.Sort(expected)
+		if total != len(expected) || !slices.Equal(actual, expected) {
+			t.Fatalf("query returned IDs %v (total %d), want %v", actual, total, expected)
+		}
+	}
+
+	// LIKE metacharacters, quotes, and SQL-looking text remain a single bound
+	// value. They cannot turn the predicate into an always-true SQL fragment.
+	assertIDs(t, groupQueryDocument(groupQueryCondition(t, "group_name", "contains", injectionText)), "group-injection")
+
+	// Independent instance conditions may be satisfied by different members.
+	assertIDs(t, groupQueryDocument(
+		groupQueryCondition(t, "path", "contains", "episode01"),
+		groupQueryCondition(t, "state", "in", []string{"paused"}),
+	), "group-series")
+
+	// An instance-scoped group requires all of its conditions to match the same
+	// torrent instance, so the split Episode 01/paused match is rejected.
+	assertIDs(t, groupQueryDocument(TorrentGroupQueryNode{
+		Type: "group", Combinator: "and", Scope: "instance", Children: []TorrentGroupQueryNode{
+			groupQueryCondition(t, "path", "contains", "episode01"),
+			groupQueryCondition(t, "state", "in", []string{"paused"}),
+		},
+	}))
+	assertIDs(t, groupQueryDocument(TorrentGroupQueryNode{
+		Type: "group", Combinator: "and", Scope: "instance", Children: []TorrentGroupQueryNode{
+			groupQueryCondition(t, "instance_name", "ends_with", "02"),
+			groupQueryCondition(t, "state", "in", []string{"paused"}),
+			groupQueryCondition(t, "site", "in", []string{"tracker:tracker.beta.example"}),
+		},
+	}), "group-series")
+	assertIDs(t, groupQueryDocument(
+		groupQueryCondition(t, "site", "contains_all", []string{
+			"tracker:tracker.alpha.example", "tracker:tracker.beta.example",
+		}),
+	), "group-series")
+	assertIDs(t, groupQueryDocument(TorrentGroupQueryNode{
+		Type: "group", Combinator: "and", Scope: "instance", Children: []TorrentGroupQueryNode{
+			groupQueryCondition(t, "site", "contains_all", []string{
+				"tracker:tracker.alpha.example", "tracker:tracker.beta.example",
+			}),
+		},
+	}))
+
+	// Negative operators mean no member may match the positive predicate. A
+	// second non-matching instance must not make the group pass.
+	assertIDs(t, groupQueryDocument(
+		groupQueryCondition(t, "path", "not_contains", "episode01"),
+		groupQueryCondition(t, "state", "not_in", []string{"paused"}),
+		groupQueryCondition(t, "site", "not_in", []string{"tracker:tracker.beta.example"}),
+	), "group-injection", "group-other")
+}
+
+func TestListTorrentGroupsStructuredQuerySupportsMetricsDatesEnumsAndNegatedGroups(t *testing.T) {
+	store := openTestStore(t)
+	store.now = func() time.Time { return time.Date(2026, time.July, 21, 12, 0, 0, 0, time.UTC) }
+	downloader := seedDownloader(t, store)
+	record := operationTestRecord(downloader, "one", "group-one")
+	record.Name = "One"
+	record.WantedBytes = 1024
+	record.AddedAt = time.Date(2026, time.July, 20, 8, 0, 0, 0, time.FixedZone("CST", 8*60*60))
+	record.Runtime.Status = "seeding"
+	record.Trackers = []TrackerRecord{{HostIdentity: "tracker.unmapped.example"}}
+	if _, err := store.ApplySync(context.Background(), ApplySyncParams{
+		DownloaderID: downloader.ID, Mode: "full", Complete: true, Torrents: []TorrentRecord{record},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	negated := true
+	query := groupQueryDocument(
+		groupQueryCondition(t, "size", "between", []int64{1000, 2000}),
+		groupQueryCondition(t, "instance_count", "eq", int64(1)),
+		groupQueryCondition(t, "site_count", "gte", int64(1)),
+		groupQueryCondition(t, "downloader_count", "lte", int64(1)),
+		groupQueryCondition(t, "data_copy_count", "ne", int64(2)),
+		groupQueryCondition(t, "oldest_added_at", "on", "2026-07-20T00:00:00+08:00"),
+		groupQueryCondition(t, "updated_at", "between", []string{"2026-07-21T00:00:00Z", "2026-07-21T00:00:00Z"}),
+		groupQueryCondition(t, "locked", "eq", false),
+		groupQueryCondition(t, "grouping_method", "eq", "auto"),
+		groupQueryCondition(t, "confidence", "eq", "verified"),
+		groupQueryCondition(t, "stale", "eq", false),
+		groupQueryCondition(t, "has_unmapped_tracker", "eq", true),
+		TorrentGroupQueryNode{
+			Type: "group", Combinator: "or", Negated: &negated,
+			Children: []TorrentGroupQueryNode{groupQueryCondition(t, "group_name", "eq", "Never")},
+		},
+	)
+	groups, total, err := store.ListTorrentGroups(context.Background(), GroupFilters{
+		Query: query, StaleBefore: time.Unix(0, 0), Limit: 20,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total != 1 || len(groups) != 1 || groups[0].ID != "group-one" {
+		t.Fatalf("structured metrics query groups = %+v, total = %d", groups, total)
+	}
+}
+
+func TestListTorrentGroupsRejectsUnsafeStructuredQueries(t *testing.T) {
+	store := openTestStore(t)
+	condition := func(field, operator string, raw string) TorrentGroupQueryNode {
+		return TorrentGroupQueryNode{Type: "condition", Field: field, Operator: operator, Value: json.RawMessage(raw)}
+	}
+	tooDeep := groupQueryDocument(TorrentGroupQueryNode{
+		Type: "group", Combinator: "and", Children: []TorrentGroupQueryNode{{
+			Type: "group", Combinator: "and", Children: []TorrentGroupQueryNode{{
+				Type: "group", Combinator: "and", Children: []TorrentGroupQueryNode{
+					condition("group_name", "eq", `"name"`),
+				},
+			}},
+		}},
+	})
+	tooMany := make([]TorrentGroupQueryNode, 31)
+	for index := range tooMany {
+		tooMany[index] = condition("size", "gte", "0")
+	}
+	invalid := []*TorrentGroupQuery{
+		{Version: 2, Root: groupQueryDocument(condition("group_name", "eq", `"name"`)).Root},
+		{Version: 1},
+		tooDeep,
+		groupQueryDocument(TorrentGroupQueryNode{Type: "group", Combinator: "and", Children: tooMany}),
+		groupQueryDocument(condition("private_hash", "eq", `"secret"`)),
+		groupQueryDocument(condition("size", "gte", `1.5`)),
+		groupQueryDocument(condition("instance_count", "gt", `1000000001`)),
+		groupQueryDocument(condition("oldest_added_at", "before", `"not-a-date"`)),
+		groupQueryDocument(condition("site", "in", `["tracker:TRACKER.EXAMPLE"]`)),
+		groupQueryDocument(condition("locked", "eq", `"true"`)),
+		groupQueryDocument(condition("grouping_method", "eq", `"sql"`)),
+		groupQueryDocument(condition("confidence", "eq", `"certain"`)),
+	}
+	for _, query := range invalid {
+		if _, _, err := store.ListTorrentGroups(context.Background(), GroupFilters{Query: query, Limit: 20}); !errors.Is(err, ErrInvalidGroupFilter) {
+			t.Fatalf("ListTorrentGroups(%+v) error = %v, want ErrInvalidGroupFilter", query, err)
+		}
+	}
+}
+
+func TestStructuredQueryDateBoundariesHonorIANATimezones(t *testing.T) {
+	location, err := time.LoadLocation("America/New_York")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []struct {
+		date     string
+		duration time.Duration
+	}{
+		{date: "2026-03-08T00:00:00-05:00", duration: 23 * time.Hour},
+		{date: "2026-11-01T00:00:00-04:00", duration: 25 * time.Hour},
+	} {
+		_, args, err := compileGroupTimeCondition(
+			"gm.oldest_added_at", "on", json.RawMessage(`"`+test.date+`"`), location,
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		start, startOK := args[0].(int64)
+		end, endOK := args[1].(int64)
+		if !startOK || !endOK {
+			t.Fatalf("date boundary args = %#v, want Unix seconds", args)
+		}
+		if got := time.Duration(end-start) * time.Second; got != test.duration {
+			t.Fatalf("date %s duration = %s, want %s", test.date, got, test.duration)
 		}
 	}
 }

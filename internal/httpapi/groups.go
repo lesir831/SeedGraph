@@ -1,7 +1,11 @@
 package httpapi
 
 import (
+	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -10,6 +14,8 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/lesir831/SeedGraph/internal/store"
 )
+
+const maxTorrentGroupQueryRequestBytes = 64 << 10
 
 func (s *Server) overview(w http.ResponseWriter, r *http.Request) {
 	value, err := s.store.GetOverview(r.Context(), time.Now().Add(-s.staleAfter))
@@ -136,6 +142,86 @@ func (s *Server) listGroups(w http.ResponseWriter, r *http.Request) {
 	writeData(w, http.StatusOK, map[string]any{
 		"items": items, "total": total, "limit": limit, "offset": offset,
 	})
+}
+
+type torrentGroupQueryRequest struct {
+	Filter       *store.TorrentGroupQuery `json:"filter"`
+	Query        string                   `json:"q"`
+	Status       string                   `json:"status"`
+	DownloaderID string                   `json:"downloader_id"`
+	Sorts        []store.GroupSort        `json:"sorts"`
+	Timezone     string                   `json:"timezone"`
+	Limit        int                      `json:"limit"`
+	Offset       int                      `json:"offset"`
+}
+
+func (s *Server) queryGroups(w http.ResponseWriter, r *http.Request) {
+	request, err := decodeTorrentGroupQueryRequest(w, r)
+	if err != nil {
+		writeAPIError(w, http.StatusBadRequest, "invalid_query", err.Error())
+		return
+	}
+	if request.Filter == nil {
+		writeAPIError(w, http.StatusBadRequest, "invalid_query", "filter 是必填项")
+		return
+	}
+	if request.Limit == 0 {
+		request.Limit = 50
+	}
+	if request.Limit < 1 || request.Limit > 200 {
+		writeAPIError(w, http.StatusBadRequest, "invalid_query", "limit 必须在 1 到 200 之间")
+		return
+	}
+	if request.Offset < 0 || request.Offset > 1_000_000 {
+		writeAPIError(w, http.StatusBadRequest, "invalid_query", "offset 必须在 0 到 1000000 之间")
+		return
+	}
+	if len(request.Query) > 1024 || len(request.Status) > 128 || len(request.DownloaderID) > 256 || len(request.Timezone) > 128 {
+		writeAPIError(w, http.StatusBadRequest, "invalid_query", "查询文本过长")
+		return
+	}
+	var queryLocation *time.Location
+	if request.Timezone != "" {
+		queryLocation, err = time.LoadLocation(request.Timezone)
+		if err != nil {
+			writeAPIError(w, http.StatusBadRequest, "invalid_query", "timezone 必须是有效的 IANA 时区")
+			return
+		}
+	}
+	for _, sortRule := range request.Sorts {
+		if sortRule.Order != "asc" && sortRule.Order != "desc" {
+			writeAPIError(w, http.StatusBadRequest, "invalid_query", "sorts 中的 order 必须明确为 asc 或 desc")
+			return
+		}
+	}
+	queryContext, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	defer cancel()
+	items, total, err := s.store.ListTorrentGroups(queryContext, store.GroupFilters{
+		Query: request.Filter, QueryLocation: queryLocation, Search: request.Query, Status: request.Status,
+		DownloaderID: request.DownloaderID, Sorts: request.Sorts,
+		StaleBefore: time.Now().Add(-s.staleAfter), Limit: request.Limit, Offset: request.Offset,
+	})
+	if err != nil {
+		s.handleError(w, r, err)
+		return
+	}
+	writeData(w, http.StatusOK, map[string]any{
+		"items": items, "total": total, "limit": request.Limit, "offset": request.Offset,
+	})
+}
+
+func decodeTorrentGroupQueryRequest(w http.ResponseWriter, r *http.Request) (torrentGroupQueryRequest, error) {
+	r.Body = http.MaxBytesReader(w, r.Body, maxTorrentGroupQueryRequestBytes)
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	var request torrentGroupQueryRequest
+	if err := decoder.Decode(&request); err != nil {
+		return torrentGroupQueryRequest{}, fmt.Errorf("请求体必须是有效的 JSON：%w", err)
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		return torrentGroupQueryRequest{}, errors.New("请求体只能包含一个 JSON 值")
+	}
+	return request, nil
 }
 
 func parseGroupSorts(values []string) ([]store.GroupSort, error) {

@@ -20,8 +20,8 @@ var ErrInvalidGroupSort = errors.New("invalid torrent group sort")
 var ErrInvalidGroupFilter = errors.New("invalid torrent group filter")
 
 type GroupSort struct {
-	Field string
-	Order string
+	Field string `json:"field"`
+	Order string `json:"order"`
 }
 
 type TorrentGroupSite struct {
@@ -33,6 +33,8 @@ type TorrentGroupSite struct {
 type GroupFilters struct {
 	ID             string
 	Search         string
+	Query          *TorrentGroupQuery
+	QueryLocation  *time.Location
 	NameContains   string
 	SiteAll        []string
 	SiteNone       []string
@@ -136,6 +138,10 @@ func (s *Store) ListTorrentGroups(ctx context.Context, filters GroupFilters) ([]
 		!filters.OldestAddedGTE.Before(*filters.OldestAddedLT) {
 		return nil, 0, fmt.Errorf("%w: oldest_added_gte must be before oldest_added_lt", ErrInvalidGroupFilter)
 	}
+	queryWhere, filterArgs, err := compileTorrentGroupQuery(filters.Query, filters.QueryLocation)
+	if err != nil {
+		return nil, 0, err
+	}
 
 	where := []string{"1 = 1"}
 	args := make([]any, 0)
@@ -216,6 +222,10 @@ func (s *Store) ListTorrentGroups(ctx context.Context, filters GroupFilters) ([]
 	if filters.OldestAddedLT != nil {
 		where = append(where, "gm.oldest_added_at < ?")
 		args = append(args, filters.OldestAddedLT.Unix())
+	}
+	if queryWhere != "" {
+		where = append(where, queryWhere)
+		args = append(args, filterArgs...)
 	}
 
 	metricsCTE := `WITH group_metrics AS (
