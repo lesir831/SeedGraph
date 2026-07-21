@@ -245,6 +245,7 @@ jobs:
           sbom: true
 
       - name: Verify candidate platforms
+        id: platforms
         shell: bash
         env:
           IMAGE_NAME: ${{ steps.image.outputs.name }}
@@ -276,11 +277,25 @@ jobs:
             exit 1
           fi
 
+          amd64_digest="$(jq -er '.manifests[]
+            | select(.platform.os == "linux" and .platform.architecture == "amd64")
+            | .digest
+            | select(type == "string" and test("^sha256:[0-9a-f]{64}$"))' "$manifest_file")"
+          arm64_digest="$(jq -er '.manifests[]
+            | select(.platform.os == "linux" and .platform.architecture == "arm64")
+            | .digest
+            | select(type == "string" and test("^sha256:[0-9a-f]{64}$"))' "$manifest_file")"
+          {
+            echo "amd64_digest=$amd64_digest"
+            echo "arm64_digest=$arm64_digest"
+          } >> "$GITHUB_OUTPUT"
+
       - name: Smoke-test candidate platforms
         shell: bash
         env:
           IMAGE_NAME: ${{ steps.image.outputs.name }}
-          IMAGE_DIGEST: ${{ steps.push.outputs.digest }}
+          AMD64_DIGEST: ${{ steps.platforms.outputs.amd64_digest }}
+          ARM64_DIGEST: ${{ steps.platforms.outputs.arm64_digest }}
         run: |
           set -Eeuo pipefail
 
@@ -301,11 +316,13 @@ jobs:
           trap cleanup EXIT
 
           platforms=(linux/amd64 linux/arm64)
+          platform_digests=("$AMD64_DIGEST" "$ARM64_DIGEST")
           ports=(18080 18081)
           for index in "${!platforms[@]}"; do
             platform="${platforms[$index]}"
+            platform_digest="${platform_digests[$index]}"
             port="${ports[$index]}"
-            echo "Smoke-testing $platform"
+            echo "Smoke-testing $platform ($platform_digest)"
             container_id="$(docker run --detach \
               --platform "$platform" \
               --publish "127.0.0.1:$port:8080" \
@@ -314,7 +331,7 @@ jobs:
               --env "SEEDGRAPH_DATABASE_PATH=/tmp/seedgraph-ci-${platform//\//-}.db" \
               --env SEEDGRAPH_COOKIE_SECURE=false \
               --env SEEDGRAPH_IYUU_SYNC_ENABLED=false \
-              "$IMAGE_NAME@$IMAGE_DIGEST")"
+              "$IMAGE_NAME@$platform_digest")"
 
             healthy=false
             for _ in {1..30}; do
