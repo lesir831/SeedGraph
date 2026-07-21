@@ -1,13 +1,13 @@
 # syntax=docker/dockerfile:1.12
 
-FROM --platform=$BUILDPLATFORM node:24-alpine AS frontend
+FROM --platform=$BUILDPLATFORM node:26-alpine AS frontend
 WORKDIR /src/frontend
 COPY frontend/package.json frontend/package-lock.json ./
 RUN --mount=type=cache,id=seedgraph-npm,target=/root/.npm,sharing=locked npm ci
 COPY frontend/ ./
 RUN npm run build
 
-FROM --platform=$BUILDPLATFORM golang:1.24-alpine AS go-modules
+FROM --platform=$BUILDPLATFORM golang:1.26-alpine AS go-modules
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download \
@@ -22,7 +22,7 @@ RUN --mount=type=cache,id=seedgraph-go-build-${TARGETOS}-${TARGETARCH},target=/r
     CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
     go build -buildvcs=false -trimpath -ldflags="-s -w" -o /out/seedgraph ./cmd/seedgraph
 
-FROM alpine:3.22
+FROM alpine:3.24
 RUN apk add --no-cache ca-certificates tzdata \
     && addgroup -S -g 10001 seedgraph \
     && adduser -S -D -H -u 10001 -G seedgraph seedgraph \
