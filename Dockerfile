@@ -3,7 +3,7 @@
 FROM --platform=$BUILDPLATFORM node:24-alpine AS frontend
 WORKDIR /src/frontend
 COPY frontend/package.json frontend/package-lock.json ./
-RUN --mount=type=cache,id=seedgraph-npm,target=/root/.npm,sharing=locked npm ci
+RUN --mount=type=cache,target=/root/.npm npm ci
 COPY frontend/ ./
 RUN npm run build
 
@@ -13,7 +13,7 @@ COPY go.mod go.sum ./
 RUN go mod download \
     && go mod verify
 
-FROM go-modules AS backend
+FROM --platform=$BUILDPLATFORM go-modules AS backend
 ARG TARGETOS
 ARG TARGETARCH
 COPY cmd/ ./cmd/
