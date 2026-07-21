@@ -162,6 +162,34 @@ func TestListTorrentGroupsSortsByWhitelistedFields(t *testing.T) {
 	if !slices.Equal(gotAddedAt, []int64{100, 200}) {
 		t.Fatalf("instance added_at values = %v", gotAddedAt)
 	}
+
+	delta := operationTestRecord(downloader, "delta", "group-delta")
+	delta.Name = "Delta"
+	delta.WantedBytes = 75
+	delta.AddedAt = time.Unix(300, 0).UTC()
+	if _, err := store.ApplySync(context.Background(), ApplySyncParams{
+		DownloaderID: downloader.ID, Mode: "delta", Torrents: []TorrentRecord{delta},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	multiSorted, _, err := store.ListTorrentGroups(context.Background(), GroupFilters{
+		Sorts: []GroupSort{
+			{Field: "instance_count", Order: "desc"},
+			{Field: "oldest_added_at", Order: "desc"},
+			{Field: "size", Order: "asc"},
+		},
+		Limit: 20,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	multiIDs := make([]string, 0, len(multiSorted))
+	for _, group := range multiSorted {
+		multiIDs = append(multiIDs, group.ID)
+	}
+	if want := []string{"group-alpha", "group-delta", "group-beta", "group-gamma"}; !slices.Equal(multiIDs, want) {
+		t.Fatalf("multi-sort group IDs = %v, want %v", multiIDs, want)
+	}
 }
 
 func TestListTorrentGroupsRejectsInvalidSort(t *testing.T) {
@@ -170,9 +198,202 @@ func TestListTorrentGroupsRejectsInvalidSort(t *testing.T) {
 		{SortBy: "updated_at", SortOrder: "desc"},
 		{SortBy: "name", SortOrder: "sideways"},
 		{SortOrder: "asc"},
+		{Sorts: []GroupSort{{Field: "name", Order: "asc"}, {Field: "name", Order: "desc"}}},
+		{Sorts: []GroupSort{{Field: "name", Order: "asc"}}, SortBy: "size"},
+		{Sorts: []GroupSort{
+			{Field: "name", Order: "asc"},
+			{Field: "size", Order: "asc"},
+			{Field: "oldest_added_at", Order: "asc"},
+			{Field: "instance_count", Order: "asc"},
+			{Field: "extra", Order: "asc"},
+		}},
 	} {
 		if _, _, err := store.ListTorrentGroups(context.Background(), filters); !errors.Is(err, ErrInvalidGroupSort) {
 			t.Fatalf("ListTorrentGroups(%+v) error = %v, want ErrInvalidGroupSort", filters, err)
+		}
+	}
+}
+
+func TestListTorrentGroupsAdvancedFiltersAndSiteSummaries(t *testing.T) {
+	store := openTestStore(t)
+	store.now = func() time.Time { return time.Unix(1000, 0).UTC() }
+	downloader := seedDownloader(t, store)
+
+	record := func(hash, groupID, name string, size, addedAt int64, trackers ...string) TorrentRecord {
+		item := operationTestRecord(downloader, hash, groupID)
+		item.Name = name
+		item.WantedBytes = size
+		item.AddedAt = time.Unix(addedAt, 0).UTC()
+		item.Trackers = make([]TrackerRecord, 0, len(trackers))
+		for _, host := range trackers {
+			item.Trackers = append(item.Trackers, TrackerRecord{HostIdentity: host})
+		}
+		return item
+	}
+	records := []TorrentRecord{
+		record("target-one", "group-target", "Target Show", 900, 100, "tracker.a.example", "tracker.unknown.example"),
+		record("target-two", "group-target", "Target Show", 700, 200, "tracker.b.example"),
+		record("only-a", "group-only-a", "Target A Only", 100, 100, "tracker.a.example"),
+		record("with-c", "group-with-c", "Target With C", 100, 100, "tracker.a.example", "tracker.b.example", "tracker.c.example"),
+		record("large", "group-large", "Target Large", 2000, 100, "tracker.a.example", "tracker.b.example"),
+		record("late", "group-late", "Target Late", 100, 200, "tracker.a.example", "tracker.b.example"),
+	}
+	if _, err := store.ApplySync(context.Background(), ApplySyncParams{
+		DownloaderID: downloader.ID, Mode: "full", Complete: true, Torrents: records,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	now := store.now().Unix()
+	if _, err := store.db.Exec(`
+		INSERT INTO sites(id, name, display_name, source, created_at, updated_at) VALUES
+			('site-a', 'site-a', 'A站', 'custom', ?, ?),
+			('site-b', 'site-b', 'B站', 'custom', ?, ?),
+			('site-c', 'site-c', 'C站', 'custom', ?, ?);
+		UPDATE torrent_trackers SET site_id = CASE host_identity
+			WHEN 'tracker.a.example' THEN 'site-a'
+			WHEN 'tracker.b.example' THEN 'site-b'
+			WHEN 'tracker.c.example' THEN 'site-c'
+			ELSE NULL
+		END`, now, now, now, now, now, now); err != nil {
+		t.Fatal(err)
+	}
+
+	sizeLT := int64(1000)
+	oldestGTE := time.Unix(90, 0).UTC()
+	oldestLT := time.Unix(150, 0).UTC()
+	groups, total, err := store.ListTorrentGroups(context.Background(), GroupFilters{
+		NameContains: "Target", SiteAll: []string{"site:site-a", "site:site-b"}, SiteNone: []string{"site:site-c"},
+		SizeLT: &sizeLT, OldestAddedGTE: &oldestGTE, OldestAddedLT: &oldestLT, Limit: 20,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total != 1 || len(groups) != 1 || groups[0].ID != "group-target" {
+		t.Fatalf("advanced groups = %+v, total = %d", groups, total)
+	}
+	group := groups[0]
+	if group.TaskCount != 2 || group.SizeBytes != 900 || group.OldestAddedAt.Unix() != 100 {
+		t.Fatalf("target metrics = %+v", group)
+	}
+	wantSites := []TorrentGroupSite{
+		{Key: "site:site-a", Label: "A站", Mapped: true},
+		{Key: "site:site-b", Label: "B站", Mapped: true},
+		{Key: "tracker:tracker.unknown.example", Label: "Unknown · tracker.unknown.example"},
+	}
+	if !slices.Equal(group.Sites, wantSites) {
+		t.Fatalf("target sites = %v, want %v", group.Sites, wantSites)
+	}
+
+	unknown, total, err := store.ListTorrentGroups(context.Background(), GroupFilters{
+		SiteAll: []string{"tracker:tracker.unknown.example"}, Limit: 20,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total != 1 || len(unknown) != 1 || unknown[0].ID != "group-target" {
+		t.Fatalf("unknown-site groups = %+v, total = %d", unknown, total)
+	}
+	options, err := store.ListTorrentGroupSiteOptions(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantOptions := []TorrentGroupSite{
+		{Key: "site:site-a", Label: "A站", Mapped: true},
+		{Key: "site:site-b", Label: "B站", Mapped: true},
+		{Key: "site:site-c", Label: "C站", Mapped: true},
+		{Key: "tracker:tracker.unknown.example", Label: "Unknown · tracker.unknown.example"},
+	}
+	if !slices.Equal(options, wantOptions) {
+		t.Fatalf("site options = %+v, want %+v", options, wantOptions)
+	}
+}
+
+func TestListTorrentGroupsKeepsCompleteMetricsWhenFilteringInstances(t *testing.T) {
+	store := openTestStore(t)
+	store.now = func() time.Time { return time.Unix(1000, 0).UTC() }
+	transmission := seedDownloader(t, store)
+	qbittorrent, err := store.CreateDownloader(context.Background(), CreateDownloaderParams{
+		Name: "qBittorrent", Kind: "qbittorrent", BaseURL: "http://qb:8080",
+		StorageID: transmission.StorageID, StorageName: "media", Enabled: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := operationTestRecord(transmission, "first", "shared-group")
+	first.Name = "Shared"
+	first.WantedBytes = 10
+	first.AddedAt = time.Unix(100, 0).UTC()
+	first.Runtime.Status = "seeding"
+	first.Trackers = []TrackerRecord{{HostIdentity: "tracker.first.example"}}
+	second := operationTestRecord(qbittorrent, "second", "shared-group")
+	second.Name = "Shared"
+	second.WantedBytes = 500
+	second.AddedAt = time.Unix(200, 0).UTC()
+	second.Runtime.Status = "paused"
+	second.Trackers = []TrackerRecord{{HostIdentity: "tracker.second.example"}}
+	if _, err := store.ApplySync(context.Background(), ApplySyncParams{
+		DownloaderID: transmission.ID, Mode: "full", Complete: true, Torrents: []TorrentRecord{first},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.ApplySync(context.Background(), ApplySyncParams{
+		DownloaderID: qbittorrent.ID, Mode: "full", Complete: true, Torrents: []TorrentRecord{second},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	groups, total, err := store.ListTorrentGroups(context.Background(), GroupFilters{
+		DownloaderID: transmission.ID, Status: "seeding", Limit: 20,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total != 1 || len(groups) != 1 {
+		t.Fatalf("filtered groups = %+v, total = %d", groups, total)
+	}
+	group := groups[0]
+	if group.TaskCount != 2 || group.DownloaderCount != 2 || group.DataCopyCount != 2 ||
+		group.SizeBytes != 500 || group.OldestAddedAt.Unix() != 100 || group.SiteCount != 2 {
+		t.Fatalf("filtered group metrics shrank: %+v", group)
+	}
+
+	if _, err := store.db.Exec(`UPDATE downloaders SET last_success_at = CASE id WHEN ? THEN 900 ELSE 0 END`, transmission.ID); err != nil {
+		t.Fatal(err)
+	}
+	fresh := false
+	freshGroups, freshTotal, err := store.ListTorrentGroups(context.Background(), GroupFilters{Stale: &fresh, Limit: 20})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if freshTotal != 0 || len(freshGroups) != 0 {
+		t.Fatalf("fresh filter returned group containing a stale downloader: %+v", freshGroups)
+	}
+	stale := true
+	staleGroups, staleTotal, err := store.ListTorrentGroups(context.Background(), GroupFilters{Stale: &stale, Limit: 20})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if staleTotal != 1 || len(staleGroups) != 1 || !staleGroups[0].Stale {
+		t.Fatalf("stale filter groups = %+v, total = %d", staleGroups, staleTotal)
+	}
+}
+
+func TestListTorrentGroupsRejectsInvalidAdvancedFilters(t *testing.T) {
+	store := openTestStore(t)
+	nonPositive := int64(0)
+	start := time.Unix(200, 0).UTC()
+	end := time.Unix(100, 0).UTC()
+	for _, filters := range []GroupFilters{
+		{SizeLT: &nonPositive},
+		{OldestAddedGTE: &start, OldestAddedLT: &end},
+		{SiteAll: []string{"site:a"}, SiteNone: []string{"site:a"}},
+		{SiteAll: []string{"site:"}},
+		{SiteAll: []string{"tracker:"}},
+		{SiteAll: []string{"unknown:value"}},
+		{SiteAll: []string{"tracker:TRACKER.EXAMPLE"}},
+	} {
+		if _, _, err := store.ListTorrentGroups(context.Background(), filters); !errors.Is(err, ErrInvalidGroupFilter) {
+			t.Fatalf("ListTorrentGroups(%+v) error = %v, want ErrInvalidGroupFilter", filters, err)
 		}
 	}
 }

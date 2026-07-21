@@ -1,14 +1,14 @@
 import {
-  ArrowDownOutlined,
-  ArrowUpOutlined,
+  ClearOutlined,
   DeleteOutlined,
   DisconnectOutlined,
   FileOutlined,
+  FilterOutlined,
   LockOutlined,
   MergeCellsOutlined,
-  QuestionCircleOutlined,
   ReloadOutlined,
   SafetyCertificateOutlined,
+  SortAscendingOutlined,
   SwapOutlined,
   UnlockOutlined,
 } from '@ant-design/icons'
@@ -19,11 +19,14 @@ import {
   Button,
   Card,
   Checkbox,
+  Collapse,
   Descriptions,
   Form,
+  Grid,
   Input,
   List,
   Modal,
+  Pagination,
   Popconfirm,
   Progress,
   Select,
@@ -34,27 +37,48 @@ import {
   Typography,
   type TableColumnsType,
 } from 'antd'
-import { useState, type Key, type ReactNode } from 'react'
+import dayjs from 'dayjs'
+import { useMemo, useState, type Key, type ReactNode } from 'react'
 import { api } from '../api/client'
-import { normalizePagedResponse, summarizeGroup } from '../api/transformers'
+import { normalizePagedResponse } from '../api/transformers'
 import type {
   DeletePlan,
   GroupFilters,
-  GroupSortBy,
-  SortOrder,
+  GroupSiteSummary,
+  GroupSortRule,
   TorrentGroup,
   TorrentInstance,
 } from '../api/types'
+import { GroupAdvancedSearchDrawer } from '../components/GroupAdvancedSearchDrawer'
+import { GroupSortDrawer } from '../components/GroupSortDrawer'
 import { PageHeader } from '../components/PageHeader'
 import { PageState } from '../components/PageState'
 import { displayError, formatBytes, formatDateTime, formatDeleteBlocker, formatPercent } from '../utils/format'
+import { GROUP_SORT_LABELS, loadGroupSorts, saveGroupSorts } from '../utils/groupSortPreferences'
 
 const initialFilters: GroupFilters = {
   status: 'all',
-  sortBy: 'oldest_added_at',
-  sortOrder: 'asc',
   page: 1,
   pageSize: 20,
+}
+
+const groupSortSummary = (sorts: GroupSortRule[]) => sorts
+  .map((rule) => `${GROUP_SORT_LABELS[rule.field]}${rule.order === 'asc' ? '↑' : '↓'}`)
+  .join(' → ')
+
+function GroupSiteTags({ sites, limit = 5 }: { sites: GroupSiteSummary[]; limit?: number }) {
+  if (!sites.length) return <Typography.Text type="secondary" className="group-site-empty">暂无站点</Typography.Text>
+  const visible = sites.slice(0, limit)
+  return (
+    <Tooltip title={sites.map((site) => site.label).join(' · ')} placement="topLeft">
+      <div className="group-site-list">
+        {visible.map((site) => (
+          <Tag key={site.key} color={site.mapped ? 'blue' : 'default'}>{site.label}</Tag>
+        ))}
+        {sites.length > limit && <Tag>+{sites.length - limit}</Tag>}
+      </div>
+    </Tooltip>
+  )
 }
 
 interface MergeFormValues {
@@ -129,8 +153,16 @@ function DeletePlanBlockerDetails({ blockers }: { blockers: DeletePlan['blockers
 export function TorrentGroupsPage() {
   const { message } = App.useApp()
   const queryClient = useQueryClient()
-  const [filters, setFilters] = useState<GroupFilters>(initialFilters)
+  const screens = Grid.useBreakpoint()
+  const isMobile = !screens.md
+  const [filters, setFilters] = useState<GroupFilters>(() => ({
+    ...initialFilters,
+    sorts: loadGroupSorts(),
+  }))
   const [searchDraft, setSearchDraft] = useState('')
+  const [advancedSearchOpen, setAdvancedSearchOpen] = useState(false)
+  const [sortDrawerOpen, setSortDrawerOpen] = useState(false)
+  const [mobileExpandedGroupIds, setMobileExpandedGroupIds] = useState<string[]>([])
   const [selectedGroupIds, setSelectedGroupIds] = useState<Key[]>([])
   const [selectedGroups, setSelectedGroups] = useState<TorrentGroup[]>([])
   const [mergeOpen, setMergeOpen] = useState(false)
@@ -154,6 +186,34 @@ export function TorrentGroupsPage() {
 		queryFn: () => api.getGroups({ status: 'all', page: 1, pageSize: 200 }),
 		enabled: Boolean(moveSelection),
 	})
+
+  const groupSiteOptions = useQuery({
+    queryKey: ['torrent-groups', 'site-options'],
+    queryFn: api.getGroupSiteOptions,
+    enabled: advancedSearchOpen,
+    staleTime: 5 * 60 * 1000,
+  })
+  const pageSiteOptions = useMemo(() => {
+    const unique = new Map<string, GroupSiteSummary>()
+    for (const site of (groups.data?.items ?? []).flatMap((group) => group.sites)) unique.set(site.key, site)
+    return Array.from(unique.values()).sort((left, right) => left.label.localeCompare(right.label, 'zh-CN'))
+  }, [groups.data?.items])
+  const siteOptions = groupSiteOptions.data ?? pageSiteOptions
+  const siteLabels = useMemo(() => new Map(
+    [...pageSiteOptions, ...siteOptions].map((site) => [site.key, site.label]),
+  ), [pageSiteOptions, siteOptions])
+  const formatSiteFilters = (keys: string[], separator = '、') => keys.map((key) => siteLabels.get(key) ?? key).join(separator)
+
+  const advancedFilterCount = [
+    filters.nameContains,
+    filters.requiredSites?.length,
+    filters.excludedSites?.length,
+    filters.sizeLT,
+    filters.oldestAddedGte || filters.oldestAddedLt,
+    filters.maxSiteCount !== undefined,
+    filters.missingSite,
+    filters.stale !== undefined,
+  ].filter(Boolean).length
 
   const invalidateGroups = async () => {
     await Promise.all([
@@ -331,20 +391,6 @@ export function TorrentGroupsPage() {
       render: (ratio: number) => ratio.toFixed(2),
     },
     {
-      title: '站点 / Tracker',
-      key: 'sites',
-      width: 220,
-      render: (_, instance) => instance.sites.length ? (
-        <div className="instance-site-list">
-          {instance.sites.map((site) => (
-            <Tooltip key={site} title={site} placement="topLeft">
-              <Tag className="instance-site-tag">{site}</Tag>
-            </Tooltip>
-          ))}
-        </div>
-      ) : <Typography.Text type="secondary">暂无站点映射</Typography.Text>,
-    },
-    {
       title: '添加时间',
       dataIndex: 'addedAt',
       width: 170,
@@ -387,109 +433,90 @@ export function TorrentGroupsPage() {
     },
   ]
 
+  const renderGroupActions = (group: TorrentGroup) => (
+    <Space size={2} wrap>
+      <Tooltip title={group.locked ? '允许自动聚合调整该组' : '保持当前分组关系'}>
+        <Button
+          type="text"
+          size="small"
+          icon={group.locked ? <UnlockOutlined /> : <LockOutlined />}
+          loading={lockMutation.isPending && lockMutation.variables?.group.id === group.id}
+          onClick={() => lockMutation.mutate({ group, locked: !group.locked })}
+        >
+          {group.locked ? '解锁' : '锁定'}
+        </Button>
+      </Tooltip>
+      {group.groupingMethod === 'manual' && (
+        <Popconfirm
+          title="恢复自动分组？"
+          description="当前手动关系将被自动规则重新计算。"
+          okText="恢复"
+          cancelText="取消"
+          onConfirm={() => restoreMutation.mutate(group)}
+        >
+          <Button type="text" size="small" icon={<ReloadOutlined />}>自动</Button>
+        </Popconfirm>
+      )}
+      <Button
+        type="text"
+        danger
+        size="small"
+        icon={<DeleteOutlined />}
+        loading={detailLoadingId === group.id}
+        onClick={() => void openDeleteModal(group)}
+      >
+        删除预览
+      </Button>
+    </Space>
+  )
+
   const columns: TableColumnsType<TorrentGroup> = [
-      {
-        title: '聚合内容',
-        key: 'name',
-        width: 360,
-        render: (_, group) => (
-          <div className="primary-cell group-name-cell">
-            <div className="group-title-row">
-              <Tooltip title={group.name} placement="topLeft">
-                <strong className="group-title-text">{group.name}</strong>
-              </Tooltip>
-              <div className="group-title-tags">
-                {group.groupingMethod === 'manual' && <Tag color="purple">手动</Tag>}
-                {group.locked && <Tag icon={<LockOutlined />} color="gold">已锁定</Tag>}
-              </div>
-            </div>
-            <span title={group.confidence === 'verified' ? '清单指纹已验证' : group.confidence === 'manual' ? '人工确认分组' : '待进一步验证的清单指纹'}>
-              {group.confidence === 'verified' ? '清单指纹已验证' : group.confidence === 'manual' ? '人工确认分组' : '待进一步验证的清单指纹'}
-            </span>
-          </div>
-        ),
-      },
-      {
-        title: '内容指纹',
-        key: 'fingerprint',
-        width: 160,
-        render: (_, group) => (
-          <div className="compact-metric"><strong>{formatBytes(group.totalSize)}</strong><span>{group.dataCopyCount} 份物理数据</span></div>
-        ),
-      },
-      {
-        title: '实例',
-        key: 'instances',
-        width: 170,
-        render: (_, group) => {
-          const summary = summarizeGroup(group)
-          return (
-            <div className="compact-metric">
-              <strong>{summary.instanceCount} 个实例</strong>
-              <span>{summary.duplicateCount ? `另有 ${summary.duplicateCount} 个任务实例` : '无额外任务实例'}</span>
-            </div>
-          )
-        },
-      },
-      {
-        title: (
-          <Tooltip title="同一任务实例可以包含多个 Tracker，因此这个数量可能大于实例数。">
-            <Space size={4}>站点 / Tracker <QuestionCircleOutlined /></Space>
-          </Tooltip>
-        ),
-        dataIndex: 'siteCount',
-        width: 160,
-        render: (value: number) => value ? <Tag>{value} 个站点 / Tracker</Tag> : <Typography.Text type="secondary">暂无站点映射</Typography.Text>,
-      },
-      {
-        title: '最旧添加时间',
-        dataIndex: 'oldestAddedAt',
-        width: 170,
-        render: formatDateTime,
-      },
-      {
-        title: '操作',
-        key: 'actions',
-        fixed: 'right',
-        width: 190,
-        render: (_, group) => (
-          <Space size={2}>
-            <Tooltip title={group.locked ? '允许自动聚合调整该组' : '保持当前分组关系'}>
-              <Button
-                type="text"
-                size="small"
-                icon={group.locked ? <UnlockOutlined /> : <LockOutlined />}
-                loading={lockMutation.isPending && lockMutation.variables?.group.id === group.id}
-                onClick={() => lockMutation.mutate({ group, locked: !group.locked })}
-              >
-                {group.locked ? '解锁' : '锁定'}
-              </Button>
+    {
+      title: '聚合内容',
+      key: 'name',
+      width: 460,
+      render: (_, group) => (
+        <div className="primary-cell group-name-cell">
+          <div className="group-title-row">
+            <Tooltip title={group.name} placement="topLeft">
+              <strong className="group-title-text">{group.name}</strong>
             </Tooltip>
-            {group.groupingMethod === 'manual' && (
-              <Popconfirm
-                title="恢复自动分组？"
-                description="当前手动关系将被自动规则重新计算。"
-                okText="恢复"
-                cancelText="取消"
-                onConfirm={() => restoreMutation.mutate(group)}
-              >
-                <Button type="text" size="small" icon={<ReloadOutlined />}>自动</Button>
-              </Popconfirm>
-            )}
-            <Button
-              type="text"
-              danger
-              size="small"
-              icon={<DeleteOutlined />}
-              loading={detailLoadingId === group.id}
-              onClick={() => void openDeleteModal(group)}
-            >
-              删除预览
-            </Button>
-          </Space>
-        ),
-      },
-    ]
+            <div className="group-title-tags">
+              {group.groupingMethod === 'manual' && <Tag color="purple">手动</Tag>}
+              {group.locked && <Tag icon={<LockOutlined />} color="gold">已锁定</Tag>}
+            </div>
+          </div>
+          <GroupSiteTags sites={group.sites} />
+        </div>
+      ),
+    },
+    {
+      title: '大小',
+      key: 'size',
+      width: 120,
+      render: (_, group) => <strong className="group-metric-value">{formatBytes(group.totalSize)}</strong>,
+    },
+    {
+      title: '实例',
+      dataIndex: 'taskCount',
+      width: 88,
+      align: 'center',
+      render: (value: number) => <strong className="group-instance-count">{value}</strong>,
+    },
+    {
+      title: '最旧添加时间',
+      dataIndex: 'oldestAddedAt',
+      width: 170,
+      render: formatDateTime,
+    },
+    {
+      title: '操作',
+      key: 'actions',
+      fixed: 'right',
+      width: 190,
+      render: (_, group) => renderGroupActions(group),
+    },
+  ]
 
   const expandedRow = (summary: TorrentGroup) => (
     <div className="expanded-group">
@@ -503,7 +530,7 @@ export function TorrentGroupsPage() {
               pagination={false}
               columns={instanceColumns(group)}
               dataSource={group.instances}
-              scroll={{ x: 1300 }}
+              scroll={{ x: 1080 }}
             />
             <details className="manifest-details">
               <summary><FileOutlined /> 分组依据与物理副本</summary>
@@ -521,6 +548,110 @@ export function TorrentGroupsPage() {
       </GroupDetailsLoader>
     </div>
   )
+
+  const setGroupSelected = (group: TorrentGroup, selected: boolean) => {
+    setSelectedGroupIds((current) => selected
+      ? [...current.filter((key) => key !== group.id), group.id]
+      : current.filter((key) => key !== group.id))
+    setSelectedGroups((current) => selected
+      ? [...current.filter((item) => item.id !== group.id), group]
+      : current.filter((item) => item.id !== group.id))
+  }
+
+  const renderMobileInstance = (group: TorrentGroup, instance: TorrentInstance) => (
+    <Card key={instance.id} size="small" className="mobile-instance-card">
+      <div className="mobile-instance-heading">
+        <div className="primary-cell">
+          <strong>{instance.downloaderName}</strong>
+          <span title={instance.name}>{instance.name}</span>
+        </div>
+        <Tag color={instance.downloaderKind === 'qbittorrent' ? 'blue' : 'geekblue'}>
+          {instance.downloaderKind === 'qbittorrent' ? 'qBittorrent' : 'Transmission'}
+        </Tag>
+      </div>
+      <Progress percent={Math.round((instance.progress > 1 ? instance.progress / 100 : instance.progress) * 100)} size="small" />
+      <div className="mobile-instance-meta">
+        <Tag color={stateColor(instance.state)}>{instance.state || 'unknown'}</Tag>
+        <span>分享率 {instance.ratio.toFixed(2)}</span>
+        <span>{formatDateTime(instance.addedAt)}</span>
+      </div>
+      <div className="mobile-card-actions">
+        {group.instances.length > 1 && group.groupingMethod === 'manual' && (
+          <Popconfirm
+            title="拆出这个实例？"
+            description="该任务会进入一个新的手动分组；可立即撤销。"
+            okText="拆分"
+            cancelText="取消"
+            onConfirm={() => splitMutation.mutate({ group, instanceIds: [instance.id] })}
+          >
+            <Button type="text" size="small" icon={<DisconnectOutlined />}>拆分</Button>
+          </Popconfirm>
+        )}
+        <Button
+          type="text"
+          size="small"
+          icon={<SwapOutlined />}
+          onClick={() => {
+            setMoveSelection({ sourceGroup: group, instance })
+            setMoveTargetId(undefined)
+          }}
+        >
+          移动
+        </Button>
+        <Button type="text" danger size="small" icon={<DeleteOutlined />} onClick={() => void openDeleteModal(group, instance.id)}>
+          预览删除
+        </Button>
+      </div>
+    </Card>
+  )
+
+  const renderMobileGroup = (group: TorrentGroup) => {
+    const selected = selectedGroupIds.includes(group.id)
+    const expanded = mobileExpandedGroupIds.includes(group.id)
+    return (
+      <List.Item key={group.id}>
+        <Card className="group-mobile-card">
+          <div className="group-mobile-heading">
+            <Checkbox checked={selected} onChange={(event) => setGroupSelected(group, event.target.checked)} />
+            <div className="group-mobile-title">
+              <Typography.Text strong title={group.name}>{group.name}</Typography.Text>
+              <div className="group-title-tags">
+                {group.groupingMethod === 'manual' && <Tag color="purple">手动</Tag>}
+                {group.locked && <Tag icon={<LockOutlined />} color="gold">已锁定</Tag>}
+              </div>
+            </div>
+          </div>
+          <GroupSiteTags sites={group.sites} limit={4} />
+          <div className="group-mobile-metrics">
+            <div><span>大小</span><strong>{formatBytes(group.totalSize)}</strong></div>
+            <div><span>实例</span><strong>{group.taskCount}</strong></div>
+            <div><span>最旧添加</span><strong>{formatDateTime(group.oldestAddedAt)}</strong></div>
+          </div>
+          <div className="mobile-card-actions">{renderGroupActions(group)}</div>
+          <Collapse
+            ghost
+            className="mobile-group-collapse"
+            activeKey={expanded ? [group.id] : []}
+            onChange={(keys) => {
+              const open = Array.isArray(keys) ? keys.includes(group.id) : keys === group.id
+              setMobileExpandedGroupIds((current) => open
+                ? [...current.filter((id) => id !== group.id), group.id]
+                : current.filter((id) => id !== group.id))
+            }}
+            items={[{
+              key: group.id,
+              label: `查看 ${group.taskCount} 个下载器实例`,
+              children: expanded ? (
+                <GroupDetailsLoader groupId={group.id}>
+                  {(detail) => <div className="mobile-instance-list">{detail.instances.map((instance) => renderMobileInstance(detail, instance))}</div>}
+                </GroupDetailsLoader>
+              ) : null,
+            }]}
+          />
+        </Card>
+      </List.Item>
+    )
+  }
 
   return (
     <div className="page-stack">
@@ -559,15 +690,19 @@ export function TorrentGroupsPage() {
 			/>
 		)}
 
-      <Card className="filter-card">
-        <Space wrap size={12}>
+      <Card className="filter-card group-control-card">
+        <div className="group-toolbar">
           <Input.Search
             allowClear
             value={searchDraft}
-            placeholder="搜索名称、路径或哈希"
+            placeholder="搜索名称或存放路径"
             className="wide-search"
-            onChange={(event) => setSearchDraft(event.target.value)}
-            onSearch={(query) => setFilters((current) => ({ ...current, query, page: 1 }))}
+            onChange={(event) => {
+              const query = event.target.value
+              setSearchDraft(query)
+              if (!query) setFilters((current) => ({ ...current, query: undefined, page: 1 }))
+            }}
+            onSearch={(query) => setFilters((current) => ({ ...current, query: query.trim() || undefined, page: 1 }))}
           />
           <Select
             value={filters.status}
@@ -595,59 +730,74 @@ export function TorrentGroupsPage() {
             options={(downloaders.data ?? []).map((item) => ({ value: item.id, label: item.name }))}
             onChange={(downloaderId) => setFilters((current) => ({ ...current, downloaderId, page: 1 }))}
           />
-          <Select
-            allowClear
-            placeholder="不限站点数量"
-            className="filter-select"
-            value={filters.maxSiteCount}
-            options={[
-              { value: 0, label: '0 个站点 / Tracker' },
-              { value: 1, label: '最多 1 个站点 / Tracker' },
-              { value: 2, label: '最多 2 个站点 / Tracker' },
-            ]}
-            onChange={(maxSiteCount) => setFilters((current) => ({ ...current, maxSiteCount, page: 1 }))}
-          />
-          <Input
-            allowClear
-            placeholder="缺少的站点名称"
-            className="filter-select"
-            value={filters.missingSite}
-            onChange={(event) => setFilters((current) => ({ ...current, missingSite: event.target.value || undefined, page: 1 }))}
-          />
-          <Select
-            allowClear
-            placeholder="全部新鲜度"
-            className="filter-select"
-            value={filters.stale}
-            options={[
-              { value: false, label: '快照新鲜' },
-              { value: true, label: '需要刷新' },
-            ]}
-            onChange={(stale) => setFilters((current) => ({ ...current, stale, page: 1 }))}
-          />
-          <Select<GroupSortBy>
-            aria-label="排序字段"
-            className="group-sort-select"
-            value={filters.sortBy}
-            options={[
-              { value: 'oldest_added_at', label: '最旧种子添加时间' },
-              { value: 'instance_count', label: '实例数量' },
-              { value: 'size', label: '内容大小' },
-              { value: 'name', label: '名称' },
-            ]}
-            onChange={(sortBy) => setFilters((current) => ({ ...current, sortBy, page: 1 }))}
-          />
-          <Select<SortOrder>
-            aria-label="排序方向"
-            className="sort-order-select"
-            value={filters.sortOrder}
-            options={[
-              { value: 'asc', label: <><ArrowUpOutlined /> 升序</> },
-              { value: 'desc', label: <><ArrowDownOutlined /> 降序</> },
-            ]}
-            onChange={(sortOrder) => setFilters((current) => ({ ...current, sortOrder, page: 1 }))}
-          />
-        </Space>
+          <Button icon={<FilterOutlined />} type={advancedFilterCount ? 'primary' : 'default'} onClick={() => setAdvancedSearchOpen(true)}>
+            高级搜索{advancedFilterCount ? ` (${advancedFilterCount})` : ''}
+          </Button>
+          <Button icon={<SortAscendingOutlined />} onClick={() => setSortDrawerOpen(true)}>
+            多级排序 ({filters.sorts?.length ?? 0})
+          </Button>
+          <Button
+            type="text"
+            icon={<ClearOutlined />}
+            disabled={!filters.query && filters.status === 'all' && !filters.downloaderId && !advancedFilterCount}
+            onClick={() => {
+              setSearchDraft('')
+              setFilters((current) => ({
+                ...initialFilters,
+                pageSize: current.pageSize,
+                sorts: current.sorts,
+              }))
+            }}
+          >
+            清空筛选
+          </Button>
+        </div>
+        <div className="group-filter-summary">
+          <span className="sort-summary"><SortAscendingOutlined /> {groupSortSummary(filters.sorts ?? [])}</span>
+          {filters.nameContains && (
+            <Tag closable onClose={() => setFilters((current) => ({ ...current, nameContains: undefined, page: 1 }))}>
+              名称包含：{filters.nameContains}
+            </Tag>
+          )}
+          {filters.requiredSites?.length ? (
+            <Tag closable color="blue" onClose={() => setFilters((current) => ({ ...current, requiredSites: undefined, page: 1 }))}>
+              同时包含：{formatSiteFilters(filters.requiredSites, ' + ')}
+            </Tag>
+          ) : null}
+          {filters.excludedSites?.length ? (
+            <Tag closable color="volcano" onClose={() => setFilters((current) => ({ ...current, excludedSites: undefined, page: 1 }))}>
+              排除：{formatSiteFilters(filters.excludedSites)}
+            </Tag>
+          ) : null}
+          {filters.sizeLT ? (
+            <Tag closable onClose={() => setFilters((current) => ({ ...current, sizeLT: undefined, page: 1 }))}>
+              大小 &lt; {formatBytes(filters.sizeLT)}
+            </Tag>
+          ) : null}
+          {(filters.oldestAddedGte || filters.oldestAddedLt) && (
+            <Tag
+              closable
+              onClose={() => setFilters((current) => ({ ...current, oldestAddedGte: undefined, oldestAddedLt: undefined, page: 1 }))}
+            >
+              最旧添加：{filters.oldestAddedGte?.slice(0, 10)} ～ {filters.oldestAddedLt ? dayjs(filters.oldestAddedLt).subtract(1, 'day').format('YYYY-MM-DD') : ''}
+            </Tag>
+          )}
+          {filters.maxSiteCount !== undefined && (
+            <Tag closable onClose={() => setFilters((current) => ({ ...current, maxSiteCount: undefined, page: 1 }))}>
+              站点数 ≤ {filters.maxSiteCount}
+            </Tag>
+          )}
+          {filters.missingSite && (
+            <Tag closable onClose={() => setFilters((current) => ({ ...current, missingSite: undefined, page: 1 }))}>
+              缺少站点：{filters.missingSite}
+            </Tag>
+          )}
+          {filters.stale !== undefined && (
+            <Tag closable onClose={() => setFilters((current) => ({ ...current, stale: undefined, page: 1 }))}>
+              {filters.stale ? '需要刷新' : '快照新鲜'}
+            </Tag>
+          )}
+        </div>
       </Card>
 
       <PageState
@@ -657,31 +807,68 @@ export function TorrentGroupsPage() {
         empty={groups.data?.items.length === 0}
         emptyDescription="当前筛选条件下没有聚合任务。同步下载器后，任务会按内容指纹自动归组。"
       >
-        <Card className="table-card">
-          <Table<TorrentGroup>
-            rowKey="id"
-            columns={columns}
-            dataSource={groups.data?.items}
-            rowSelection={{
-              selectedRowKeys: selectedGroupIds,
-              onChange: (keys, rows) => {
-                setSelectedGroupIds(keys)
-                setSelectedGroups(rows)
-              },
-            }}
-            expandable={{ expandedRowRender: expandedRow }}
-            scroll={{ x: 1230 }}
-            pagination={{
-              current: groups.data?.page ?? filters.page,
-              pageSize: groups.data?.pageSize ?? filters.pageSize,
-              total: groups.data?.total ?? 0,
-              showSizeChanger: true,
-              showTotal: (total) => `共 ${total} 个任务组`,
-              onChange: (page, pageSize) => setFilters((current) => ({ ...current, page, pageSize })),
-            }}
-          />
-        </Card>
+        {isMobile ? (
+          <div className="group-mobile-view">
+            <List<TorrentGroup>
+              className="group-mobile-list"
+              dataSource={groups.data?.items}
+              renderItem={renderMobileGroup}
+            />
+            <Pagination
+              simple
+              current={groups.data?.page ?? filters.page}
+              pageSize={groups.data?.pageSize ?? filters.pageSize}
+              total={groups.data?.total ?? 0}
+              onChange={(page, pageSize) => setFilters((current) => ({ ...current, page, pageSize }))}
+            />
+          </div>
+        ) : (
+          <Card className="table-card group-table-card">
+            <Table<TorrentGroup>
+              rowKey="id"
+              columns={columns}
+              dataSource={groups.data?.items}
+              rowSelection={{
+                selectedRowKeys: selectedGroupIds,
+                onChange: (keys, rows) => {
+                  setSelectedGroupIds(keys)
+                  setSelectedGroups(rows)
+                },
+              }}
+              expandable={{ expandedRowRender: expandedRow }}
+              scroll={{ x: 1080 }}
+              pagination={{
+                current: groups.data?.page ?? filters.page,
+                pageSize: groups.data?.pageSize ?? filters.pageSize,
+                total: groups.data?.total ?? 0,
+                showSizeChanger: true,
+                showTotal: (total) => `共 ${total} 个任务组`,
+                onChange: (page, pageSize) => setFilters((current) => ({ ...current, page, pageSize })),
+              }}
+            />
+          </Card>
+        )}
       </PageState>
+
+      <GroupAdvancedSearchDrawer
+        open={advancedSearchOpen}
+        filters={filters}
+        siteOptions={siteOptions}
+        siteOptionsLoading={groupSiteOptions.isLoading}
+        siteOptionsError={groupSiteOptions.isError}
+        onRetrySiteOptions={() => void groupSiteOptions.refetch()}
+        onClose={() => setAdvancedSearchOpen(false)}
+        onApply={(advancedFilters) => setFilters((current) => ({ ...current, ...advancedFilters, page: 1 }))}
+      />
+      <GroupSortDrawer
+        open={sortDrawerOpen}
+        sorts={filters.sorts ?? []}
+        onClose={() => setSortDrawerOpen(false)}
+        onApply={(sorts) => {
+          saveGroupSorts(sorts)
+          setFilters((current) => ({ ...current, sorts, page: 1 }))
+        }}
+      />
 
       <Modal
         title="创建手动分组"

@@ -86,6 +86,7 @@ func (s *Server) Handler(frontend http.Handler) http.Handler {
 			protected.Post("/auth/logout", s.logout)
 			protected.Get("/overview", s.overview)
 			protected.Get("/torrent-groups", s.listGroups)
+			protected.Get("/torrent-groups/site-options", s.listGroupSiteOptions)
 			protected.Get("/torrent-groups/{id}", s.getGroup)
 			protected.Post("/torrent-groups/merge", s.mergeGroups)
 			protected.Post("/torrent-groups/{id}/split", s.splitGroup)
@@ -207,6 +208,8 @@ func (s *Server) handleError(w http.ResponseWriter, r *http.Request, err error) 
 	switch {
 	case errors.Is(err, store.ErrNotFound):
 		writeAPIError(w, http.StatusNotFound, "not_found", "资源不存在")
+	case errors.Is(err, store.ErrInvalidGroupFilter), errors.Is(err, store.ErrInvalidGroupSort):
+		writeAPIError(w, http.StatusBadRequest, "invalid_query", err.Error())
 	case errors.Is(err, store.ErrVersionConflict), errors.Is(err, syncer.ErrAlreadyRunning),
 		errors.Is(err, deletion.ErrPlanChanged):
 		writeAPIError(w, http.StatusConflict, "conflict", err.Error())

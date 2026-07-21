@@ -53,9 +53,16 @@ export interface TorrentInstance {
   completedAt?: string
 }
 
+export interface GroupSiteSummary {
+  key: string
+  label: string
+  mapped: boolean
+}
+
 export interface TorrentGroup {
   id: string
   name: string
+  sites: GroupSiteSummary[]
   canonicalPath: string
   totalSize: number
   fileCount: number
@@ -79,14 +86,28 @@ export interface TorrentGroup {
 export type GroupSortBy = 'oldest_added_at' | 'instance_count' | 'size' | 'name'
 export type SortOrder = 'asc' | 'desc'
 
+export interface GroupSortRule {
+  field: GroupSortBy
+  order: SortOrder
+}
+
 export interface GroupFilters {
   query?: string
+  nameContains?: string
+  requiredSites?: string[]
+  excludedSites?: string[]
+  sizeLT?: number
+  oldestAddedGte?: string
+  oldestAddedLt?: string
   status?: string
   downloaderId?: string
   missingSite?: string
   maxSiteCount?: number
   stale?: boolean
+  sorts?: GroupSortRule[]
+  /** @deprecated Use sorts for ordered multi-column sorting. */
   sortBy?: GroupSortBy
+  /** @deprecated Use sorts for ordered multi-column sorting. */
   sortOrder?: SortOrder
   page: number
   pageSize: number

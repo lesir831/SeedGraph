@@ -5,6 +5,7 @@ import type {
   DeleteJob,
   DeletePlan,
   Downloader,
+  GroupSiteSummary,
   OverviewData,
   PagedResponse,
   SyncStatus,
@@ -52,6 +53,7 @@ export interface WireOverview {
 export interface WireTorrentGroup {
   id: string
   name: string
+  sites?: WireGroupSiteSummary[] | null
   size_bytes: number
   task_count: number
   site_count: number
@@ -66,6 +68,12 @@ export interface WireTorrentGroup {
   updated_at: string
 	operation_id?: string
   instances?: WireTorrentInstance[] | null
+}
+
+export interface WireGroupSiteSummary {
+  key: string
+  label: string
+  mapped: boolean
 }
 
 export interface WireTorrentInstance {
@@ -264,11 +272,25 @@ const toTorrentInstance = (wire: WireTorrentInstance): TorrentInstance => ({
   addedAt: wire.added_at ?? undefined,
 })
 
+export const toGroupSiteSummary = (wire: WireGroupSiteSummary): GroupSiteSummary => ({
+  key: wire.key,
+  label: wire.label,
+  mapped: wire.mapped,
+})
+
 export const toTorrentGroup = (wire: WireTorrentGroup): TorrentGroup => {
   const instances = (wire.instances ?? []).map(toTorrentInstance)
+  const sites = wire.sites
+    ? wire.sites.map(toGroupSiteSummary)
+    : Array.from(new Set(instances.flatMap((instance) => instance.sites))).map((site) => ({
+      key: site,
+      label: site,
+      mapped: !site.startsWith('Unknown'),
+    }))
   return {
     id: wire.id,
     name: wire.name,
+    sites,
     canonicalPath: instances[0]?.savePath ?? '',
     totalSize: wire.size_bytes,
     fileCount: 0,

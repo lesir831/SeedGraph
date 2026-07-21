@@ -118,16 +118,60 @@ func TestListGroupsValidatesSortQuery(t *testing.T) {
 	if validResponse.Code != http.StatusOK {
 		t.Fatalf("valid sort status = %d, body = %s", validResponse.Code, validResponse.Body.String())
 	}
+	multiResponse := httptest.NewRecorder()
+	server.listGroups(multiResponse, httptest.NewRequest(
+		http.MethodGet,
+		"/?sort=instance_count:desc&sort=oldest_added_at:desc&sort=size:asc"+
+			"&name_contains=Show&site_all=site%3Asite-a&site_all=site%3Asite-b&site_none=site%3Asite-c"+
+			"&size_lt=1073741824&oldest_added_gte=2026-01-01T00:00:00Z&oldest_added_lt=2026-02-01T00:00:00Z",
+		nil,
+	))
+	if multiResponse.Code != http.StatusOK {
+		t.Fatalf("valid advanced query status = %d, body = %s", multiResponse.Code, multiResponse.Body.String())
+	}
 
 	for _, target := range []string{
 		"/?sort_by=updated_at&sort_order=desc",
 		"/?sort_by=name&sort_order=sideways",
 		"/?sort_order=asc",
+		"/?sort=name:asc&sort_by=name",
+		"/?sort=name",
+		"/?sort=name:sideways",
+		"/?sort=updated_at:desc",
+		"/?sort=name:asc&sort=name:desc",
+		"/?sort=name:asc&sort=size:asc&sort=oldest_added_at:asc&sort=instance_count:asc&sort=extra:asc",
+		"/?site_all=site%3Aa&site_none=site%3Aa",
+		"/?site_all=A",
+		"/?site_all=unknown%3Aa",
+		"/?site_all=site%3A",
+		"/?site_all=tracker%3A",
+		"/?site_all=tracker%3ATRACKER.EXAMPLE",
+		"/?site_all=",
+		"/?size_lt=0",
+		"/?size_lt=not-a-number",
+		"/?oldest_added_gte=not-a-time",
+		"/?oldest_added_lt=not-a-time",
+		"/?oldest_added_gte=2026-02-01T00:00:00Z&oldest_added_lt=2026-01-01T00:00:00Z",
 	} {
 		response := httptest.NewRecorder()
 		server.listGroups(response, httptest.NewRequest(http.MethodGet, target, nil))
 		if response.Code != http.StatusBadRequest {
 			t.Fatalf("GET %s status = %d, body = %s", target, response.Code, response.Body.String())
 		}
+	}
+
+	optionsResponse := httptest.NewRecorder()
+	server.listGroupSiteOptions(optionsResponse, httptest.NewRequest(http.MethodGet, "/", nil))
+	if optionsResponse.Code != http.StatusOK {
+		t.Fatalf("site options status = %d, body = %s", optionsResponse.Code, optionsResponse.Body.String())
+	}
+	var optionsPayload struct {
+		Data []store.TorrentGroupSite `json:"data"`
+	}
+	if err := json.Unmarshal(optionsResponse.Body.Bytes(), &optionsPayload); err != nil {
+		t.Fatal(err)
+	}
+	if optionsPayload.Data == nil || len(optionsPayload.Data) != 0 {
+		t.Fatalf("empty site options = %+v, want non-nil empty list", optionsPayload.Data)
 	}
 }

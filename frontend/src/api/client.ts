@@ -6,6 +6,7 @@ import {
   toDeleteJob,
   toDeletePlan,
   toDownloader,
+  toGroupSiteSummary,
   toOverview,
   toSyncStatus,
   toTorrentGroup,
@@ -17,6 +18,7 @@ import {
   type WireDeleteJob,
   type WireDeletePlan,
   type WireDownloader,
+  type WireGroupSiteSummary,
   type WireOverview,
   type WirePagedResponse,
   type WireSyncStatus,
@@ -36,6 +38,7 @@ import type {
   Downloader,
   DownloaderInput,
   GroupFilters,
+	GroupSiteSummary,
 	IYUUCatalog,
 	IYUUSiteFilters,
 	IYUUSyncResult,
@@ -63,7 +66,7 @@ interface ApiEnvelope<T> {
 }
 
 interface RequestOptions extends RequestInit {
-  query?: Record<string, string | number | boolean | undefined>
+  query?: Record<string, string | number | boolean | string[] | undefined>
 }
 
 export class ApiError extends Error {
@@ -84,6 +87,12 @@ const isEnvelope = <T,>(value: unknown): value is ApiEnvelope<T> =>
 const makeUrl = (path: string, query?: RequestOptions['query']) => {
   const url = new URL(`${API_ROOT}${path}`, window.location.origin)
   Object.entries(query ?? {}).forEach(([key, value]) => {
+    if (Array.isArray(value)) {
+      value.forEach((item) => {
+        if (item !== '') url.searchParams.append(key, item)
+      })
+      return
+    }
     if (value !== undefined && value !== '') url.searchParams.set(key, String(value))
   })
   return `${url.pathname}${url.search}`
@@ -171,17 +180,31 @@ export const api = {
     const wire = await request<WirePagedResponse<WireTorrentGroup> | WireTorrentGroup[]>('/torrent-groups', {
       query: {
         q: filters.query,
+        name_contains: filters.nameContains,
+        site_all: filters.requiredSites,
+        site_none: filters.excludedSites,
+        size_lt: filters.sizeLT,
+        oldest_added_gte: filters.oldestAddedGte,
+        oldest_added_lt: filters.oldestAddedLt,
         status: filters.status === 'all' ? undefined : filters.status,
         downloader_id: filters.downloaderId,
         missing_site: filters.missingSite,
         max_site_count: filters.maxSiteCount,
         stale: filters.stale,
-        sort_by: filters.sortBy,
-        sort_order: filters.sortOrder,
+        sort: filters.sorts?.map((rule) => `${rule.field}:${rule.order}`),
+        sort_by: filters.sorts?.length ? undefined : filters.sortBy,
+        sort_order: filters.sorts?.length ? undefined : filters.sortOrder,
         ...getPage(filters.page, filters.pageSize),
       },
     })
     return normalizeWirePage(wire, toTorrentGroup, filters.page, filters.pageSize)
+  },
+  getGroupSiteOptions: async (): Promise<GroupSiteSummary[]> => {
+    const wire = await request<WireGroupSiteSummary[] | { items?: WireGroupSiteSummary[] | null }>(
+      '/torrent-groups/site-options',
+    )
+    const items = Array.isArray(wire) ? wire : wire.items ?? []
+    return items.map(toGroupSiteSummary)
   },
   getGroup: async (id: string): Promise<TorrentGroup> =>
     toTorrentGroup(await request<WireTorrentGroup>(`/torrent-groups/${encodeURIComponent(id)}`)),

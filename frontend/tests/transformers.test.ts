@@ -33,6 +33,7 @@ describe('summarizeGroup', () => {
     const group: TorrentGroup = {
       id: 'group-1',
       name: 'Ubuntu ISO',
+      sites: [{ key: 'example', label: 'Example', mapped: true }],
       canonicalPath: '/downloads/linux/ubuntu.iso',
       totalSize: 100,
       fileCount: 1,
@@ -86,6 +87,10 @@ describe('API model helpers', () => {
     const group = toTorrentGroup({
       id: 'group-1',
       name: 'Linux ISO',
+      sites: [
+        { key: 'site:example', label: 'Example', mapped: true },
+        { key: 'tracker:tracker.unknown.test', label: 'Unknown · tracker.unknown.test', mapped: false },
+      ],
       size_bytes: 2048,
       task_count: 1,
       site_count: 1,
@@ -121,6 +126,10 @@ describe('API model helpers', () => {
 
     expect(group.canonicalPath).toBe('/data/linux.iso')
     expect(group.groupingMethod).toBe('automatic')
+    expect(group.sites).toEqual([
+      { key: 'site:example', label: 'Example', mapped: true },
+      { key: 'tracker:tracker.unknown.test', label: 'Unknown · tracker.unknown.test', mapped: false },
+    ])
     expect(group.oldestAddedAt).toBe('2026-07-17T12:00:00Z')
     expect(group.instances[0]).toMatchObject({
       hash: 'abc',
@@ -129,6 +138,47 @@ describe('API model helpers', () => {
       addedAt: '2026-07-17T12:00:00Z',
       state: 'seeding',
     })
+  })
+
+  it('derives compatible group site summaries when an older detail omits group sites', () => {
+    const group = toTorrentGroup({
+      id: 'group-fallback',
+      name: 'Fallback',
+      size_bytes: 1,
+      task_count: 1,
+      site_count: 2,
+      downloader_count: 1,
+      data_copy_count: 1,
+      confidence: 'verified',
+      mode: 'auto',
+      locked: false,
+      version: 1,
+      stale: false,
+      updated_at: '2026-07-18T00:00:00Z',
+      instances: [{
+        id: 'instance-fallback',
+        downloader_id: 'downloader-1',
+        downloader_name: 'NAS qB',
+        downloader_kind: 'qbittorrent',
+        stable_hash_key: 'fallback',
+        name: 'Fallback',
+        canonical_path: '/data/fallback',
+        storage_id: 'storage-1',
+        wanted_bytes: 1,
+        data_group_id: 'data-1',
+        assignment_source: 'auto',
+        status: 'seeding',
+        progress: 1,
+        ratio: 1,
+        updated_at: '2026-07-18T00:00:00Z',
+        sites: ['Example', 'Unknown · tracker.unknown.test'],
+      }],
+    })
+
+    expect(group.sites).toEqual([
+      { key: 'Example', label: 'Example', mapped: true },
+      { key: 'Unknown · tracker.unknown.test', label: 'Unknown · tracker.unknown.test', mapped: false },
+    ])
   })
 
   it('maps privacy-preserving unmapped Tracker identities', () => {

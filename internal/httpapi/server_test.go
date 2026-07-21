@@ -218,6 +218,22 @@ func TestUnmappedTrackerIdentitiesRouteIsProtectedAndRedacted(t *testing.T) {
 			t.Fatalf("torrent group route leaked %q: %s", secret, groupResponse.Body.String())
 		}
 	}
+	siteOptionsResponse := httptest.NewRecorder()
+	siteOptionsRequest := httptest.NewRequest(http.MethodGet, "/api/v1/torrent-groups/site-options", nil)
+	siteOptionsRequest.AddCookie(cookie)
+	handler.ServeHTTP(siteOptionsResponse, siteOptionsRequest)
+	if siteOptionsResponse.Code != http.StatusOK {
+		t.Fatalf("torrent group site options status = %d, body = %s", siteOptionsResponse.Code, siteOptionsResponse.Body.String())
+	}
+	if !strings.Contains(siteOptionsResponse.Body.String(), `"key":"tracker:_redacted.tracker.example.com"`) ||
+		!strings.Contains(siteOptionsResponse.Body.String(), `"label":"Unknown · _redacted.tracker.example.com"`) {
+		t.Fatalf("torrent group site options omitted stable redacted tracker option: %s", siteOptionsResponse.Body.String())
+	}
+	for _, secret := range []string{rawTracker, hostSecret, "path-secret", "query-secret", "passkey"} {
+		if strings.Contains(siteOptionsResponse.Body.String(), secret) {
+			t.Fatalf("torrent group site options leaked %q: %s", secret, siteOptionsResponse.Body.String())
+		}
+	}
 	// Startup migration canonicalizes old rows before rule mutations occur in a
 	// real process. Restore that canonical state after the read-time legacy leak
 	// checks so the remainder exercises exact placeholder reclassification.

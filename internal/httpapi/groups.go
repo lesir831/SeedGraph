@@ -1,8 +1,10 @@
 package httpapi
 
 import (
+	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -29,8 +31,14 @@ func (s *Server) listGroups(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, http.StatusBadRequest, "invalid_query", err.Error())
 		return
 	}
-	sortBy := r.URL.Query().Get("sort_by")
-	sortOrder := r.URL.Query().Get("sort_order")
+	query := r.URL.Query()
+	sortBy := query.Get("sort_by")
+	sortOrder := query.Get("sort_order")
+	sortValues, hasMultiSort := query["sort"]
+	if hasMultiSort && (sortBy != "" || sortOrder != "") {
+		writeAPIError(w, http.StatusBadRequest, "invalid_query", "sort 不能与 sort_by 或 sort_order 同时使用")
+		return
+	}
 	if sortBy == "" && sortOrder != "" {
 		writeAPIError(w, http.StatusBadRequest, "invalid_query", "sort_order 必须与 sort_by 一起提供")
 		return
@@ -43,13 +51,68 @@ func (s *Server) listGroups(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, http.StatusBadRequest, "invalid_query", "sort_order 必须是 asc 或 desc")
 		return
 	}
+	sorts, err := parseGroupSorts(sortValues)
+	if err != nil {
+		writeAPIError(w, http.StatusBadRequest, "invalid_query", err.Error())
+		return
+	}
+	siteAll, err := repeatedGroupFilter(query["site_all"], "site_all")
+	if err != nil {
+		writeAPIError(w, http.StatusBadRequest, "invalid_query", err.Error())
+		return
+	}
+	siteNone, err := repeatedGroupFilter(query["site_none"], "site_none")
+	if err != nil {
+		writeAPIError(w, http.StatusBadRequest, "invalid_query", err.Error())
+		return
+	}
+	excludedSites := make(map[string]struct{}, len(siteNone))
+	for _, site := range siteNone {
+		excludedSites[site] = struct{}{}
+	}
+	for _, site := range siteAll {
+		if _, excluded := excludedSites[site]; excluded {
+			writeAPIError(w, http.StatusBadRequest, "invalid_query", "同一站点不能同时出现在 site_all 和 site_none")
+			return
+		}
+	}
 	filters := store.GroupFilters{
-		Search: r.URL.Query().Get("q"), MissingSite: r.URL.Query().Get("missing_site"),
-		DownloaderID: r.URL.Query().Get("downloader_id"), Status: r.URL.Query().Get("status"),
-		StaleBefore: time.Now().Add(-s.staleAfter), SortBy: sortBy, SortOrder: sortOrder,
+		Search: query.Get("q"), NameContains: query.Get("name_contains"),
+		SiteAll: siteAll, SiteNone: siteNone, MissingSite: query.Get("missing_site"),
+		DownloaderID: query.Get("downloader_id"), Status: query.Get("status"),
+		StaleBefore: time.Now().Add(-s.staleAfter), Sorts: sorts, SortBy: sortBy, SortOrder: sortOrder,
 		Limit: limit, Offset: offset,
 	}
-	if value := r.URL.Query().Get("max_site_count"); value != "" {
+	if value := query.Get("size_lt"); value != "" {
+		parsed, err := strconv.ParseInt(value, 10, 64)
+		if err != nil || parsed <= 0 {
+			writeAPIError(w, http.StatusBadRequest, "invalid_query", "size_lt 必须是正整数")
+			return
+		}
+		filters.SizeLT = &parsed
+	}
+	if value := query.Get("oldest_added_gte"); value != "" {
+		parsed, err := time.Parse(time.RFC3339, value)
+		if err != nil {
+			writeAPIError(w, http.StatusBadRequest, "invalid_query", "oldest_added_gte 必须是 RFC3339 时间")
+			return
+		}
+		filters.OldestAddedGTE = &parsed
+	}
+	if value := query.Get("oldest_added_lt"); value != "" {
+		parsed, err := time.Parse(time.RFC3339, value)
+		if err != nil {
+			writeAPIError(w, http.StatusBadRequest, "invalid_query", "oldest_added_lt 必须是 RFC3339 时间")
+			return
+		}
+		filters.OldestAddedLT = &parsed
+	}
+	if filters.OldestAddedGTE != nil && filters.OldestAddedLT != nil &&
+		!filters.OldestAddedGTE.Before(*filters.OldestAddedLT) {
+		writeAPIError(w, http.StatusBadRequest, "invalid_query", "oldest_added_gte 必须早于 oldest_added_lt")
+		return
+	}
+	if value := query.Get("max_site_count"); value != "" {
 		parsed, err := strconv.Atoi(value)
 		if err != nil || parsed < 0 {
 			writeAPIError(w, http.StatusBadRequest, "invalid_query", "max_site_count 必须是非负整数")
@@ -57,7 +120,7 @@ func (s *Server) listGroups(w http.ResponseWriter, r *http.Request) {
 		}
 		filters.MaxSiteCount = &parsed
 	}
-	if value := r.URL.Query().Get("stale"); value != "" {
+	if value := query.Get("stale"); value != "" {
 		parsed, err := strconv.ParseBool(value)
 		if err != nil {
 			writeAPIError(w, http.StatusBadRequest, "invalid_query", "stale 必须是布尔值")
@@ -73,6 +136,68 @@ func (s *Server) listGroups(w http.ResponseWriter, r *http.Request) {
 	writeData(w, http.StatusOK, map[string]any{
 		"items": items, "total": total, "limit": limit, "offset": offset,
 	})
+}
+
+func parseGroupSorts(values []string) ([]store.GroupSort, error) {
+	if len(values) == 0 {
+		return nil, nil
+	}
+	if len(values) > 4 {
+		return nil, fmt.Errorf("sort 最多支持 4 级")
+	}
+	result := make([]store.GroupSort, 0, len(values))
+	seen := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		if strings.Count(value, ":") != 1 {
+			return nil, fmt.Errorf("sort 必须使用 field:order 格式")
+		}
+		field, order, _ := strings.Cut(value, ":")
+		if field != "oldest_added_at" && field != "instance_count" && field != "size" && field != "name" {
+			return nil, fmt.Errorf("sort 字段必须是 oldest_added_at、instance_count、size 或 name")
+		}
+		if order != "asc" && order != "desc" {
+			return nil, fmt.Errorf("sort 方向必须是 asc 或 desc")
+		}
+		if _, duplicate := seen[field]; duplicate {
+			return nil, fmt.Errorf("sort 不能重复使用同一字段")
+		}
+		seen[field] = struct{}{}
+		result = append(result, store.GroupSort{Field: field, Order: order})
+	}
+	return result, nil
+}
+
+func repeatedGroupFilter(values []string, name string) ([]string, error) {
+	if len(values) > 20 {
+		return nil, fmt.Errorf("%s 最多允许 20 个值", name)
+	}
+	result := make([]string, 0, len(values))
+	seen := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			return nil, fmt.Errorf("%s 不能包含空值", name)
+		}
+		prefix, identifier, found := strings.Cut(value, ":")
+		if !found || (prefix != "site" && prefix != "tracker") || strings.TrimSpace(identifier) == "" {
+			return nil, fmt.Errorf("%s 必须使用非空的 site: 或 tracker: key", name)
+		}
+		if _, duplicate := seen[value]; duplicate {
+			continue
+		}
+		seen[value] = struct{}{}
+		result = append(result, value)
+	}
+	return result, nil
+}
+
+func (s *Server) listGroupSiteOptions(w http.ResponseWriter, r *http.Request) {
+	items, err := s.store.ListTorrentGroupSiteOptions(r.Context())
+	if err != nil {
+		s.handleError(w, r, err)
+		return
+	}
+	writeData(w, http.StatusOK, items)
 }
 
 func (s *Server) getGroup(w http.ResponseWriter, r *http.Request) {

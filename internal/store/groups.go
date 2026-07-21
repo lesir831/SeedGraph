@@ -17,36 +17,57 @@ var ErrVersionConflict = errors.New("resource version conflict")
 
 var ErrInvalidGroupSort = errors.New("invalid torrent group sort")
 
+var ErrInvalidGroupFilter = errors.New("invalid torrent group filter")
+
+type GroupSort struct {
+	Field string
+	Order string
+}
+
+type TorrentGroupSite struct {
+	Key    string `json:"key"`
+	Label  string `json:"label"`
+	Mapped bool   `json:"mapped"`
+}
+
 type GroupFilters struct {
-	ID           string
-	Search       string
-	MaxSiteCount *int
-	MissingSite  string
-	DownloaderID string
-	Status       string
-	Stale        *bool
-	StaleBefore  time.Time
-	SortBy       string
-	SortOrder    string
-	Limit        int
-	Offset       int
+	ID             string
+	Search         string
+	NameContains   string
+	SiteAll        []string
+	SiteNone       []string
+	SizeLT         *int64
+	OldestAddedGTE *time.Time
+	OldestAddedLT  *time.Time
+	MaxSiteCount   *int
+	MissingSite    string
+	DownloaderID   string
+	Status         string
+	Stale          *bool
+	StaleBefore    time.Time
+	Sorts          []GroupSort
+	SortBy         string
+	SortOrder      string
+	Limit          int
+	Offset         int
 }
 
 type TorrentGroup struct {
-	ID              string    `json:"id"`
-	Name            string    `json:"name"`
-	SizeBytes       int64     `json:"size_bytes"`
-	TaskCount       int       `json:"task_count"`
-	SiteCount       int       `json:"site_count"`
-	DownloaderCount int       `json:"downloader_count"`
-	DataCopyCount   int       `json:"data_copy_count"`
-	Confidence      string    `json:"confidence"`
-	Mode            string    `json:"mode"`
-	Locked          bool      `json:"locked"`
-	Version         int       `json:"version"`
-	Stale           bool      `json:"stale"`
-	OldestAddedAt   time.Time `json:"oldest_added_at"`
-	UpdatedAt       time.Time `json:"updated_at"`
+	ID              string             `json:"id"`
+	Name            string             `json:"name"`
+	SizeBytes       int64              `json:"size_bytes"`
+	TaskCount       int                `json:"task_count"`
+	SiteCount       int                `json:"site_count"`
+	DownloaderCount int                `json:"downloader_count"`
+	DataCopyCount   int                `json:"data_copy_count"`
+	Confidence      string             `json:"confidence"`
+	Mode            string             `json:"mode"`
+	Locked          bool               `json:"locked"`
+	Version         int                `json:"version"`
+	Stale           bool               `json:"stale"`
+	OldestAddedAt   time.Time          `json:"oldest_added_at"`
+	UpdatedAt       time.Time          `json:"updated_at"`
+	Sites           []TorrentGroupSite `json:"sites"`
 }
 
 type TorrentInstanceView struct {
@@ -86,89 +107,159 @@ func (s *Store) ListTorrentGroups(ctx context.Context, filters GroupFilters) ([]
 	if filters.StaleBefore.IsZero() {
 		filters.StaleBefore = s.now().Add(-5 * time.Minute)
 	}
-	orderBy, err := torrentGroupOrderBy(filters.SortBy, filters.SortOrder)
+	orderBy, err := torrentGroupOrderBy(filters.Sorts, filters.SortBy, filters.SortOrder)
 	if err != nil {
 		return nil, 0, err
 	}
+	siteAll, err := parseGroupSiteFilters(filters.SiteAll)
+	if err != nil {
+		return nil, 0, err
+	}
+	siteNone, err := parseGroupSiteFilters(filters.SiteNone)
+	if err != nil {
+		return nil, 0, err
+	}
+	if len(siteAll) > 20 || len(siteNone) > 20 {
+		return nil, 0, fmt.Errorf("%w: too many site filters", ErrInvalidGroupFilter)
+	}
+	for _, required := range siteAll {
+		for _, excluded := range siteNone {
+			if required.key == excluded.key {
+				return nil, 0, fmt.Errorf("%w: site cannot be both required and excluded", ErrInvalidGroupFilter)
+			}
+		}
+	}
+	if filters.SizeLT != nil && *filters.SizeLT <= 0 {
+		return nil, 0, fmt.Errorf("%w: size_lt must be positive", ErrInvalidGroupFilter)
+	}
+	if filters.OldestAddedGTE != nil && filters.OldestAddedLT != nil &&
+		!filters.OldestAddedGTE.Before(*filters.OldestAddedLT) {
+		return nil, 0, fmt.Errorf("%w: oldest_added_gte must be before oldest_added_lt", ErrInvalidGroupFilter)
+	}
 
-	where := []string{"cg.deleted_at IS NULL", "ti.deleted_at IS NULL"}
-	args := []any{}
+	where := []string{"1 = 1"}
+	args := make([]any, 0)
 	if filters.ID != "" {
-		where = append(where, "cg.id = ?")
+		where = append(where, "gm.id = ?")
 		args = append(args, filters.ID)
 	}
+	if value := strings.TrimSpace(filters.NameContains); value != "" {
+		where = append(where, "gm.display_name LIKE ? ESCAPE '\\'")
+		args = append(args, "%"+escapeLike(value)+"%")
+	}
+
+	instanceWhere := []string{"fti.content_group_id = gm.id", "fti.deleted_at IS NULL"}
+	instanceArgs := make([]any, 0)
+	needsInstanceFilter := false
 	if value := strings.TrimSpace(filters.Search); value != "" {
-		where = append(where, "(cg.display_name LIKE ? ESCAPE '\\' OR ti.canonical_path LIKE ? ESCAPE '\\')")
 		like := "%" + escapeLike(value) + "%"
-		args = append(args, like, like)
+		instanceWhere = append(instanceWhere, "(gm.display_name LIKE ? ESCAPE '\\' OR fti.canonical_path LIKE ? ESCAPE '\\')")
+		instanceArgs = append(instanceArgs, like, like)
+		needsInstanceFilter = true
 	}
 	if filters.DownloaderID != "" {
-		where = append(where, "ti.downloader_id = ?")
-		args = append(args, filters.DownloaderID)
+		instanceWhere = append(instanceWhere, "fti.downloader_id = ?")
+		instanceArgs = append(instanceArgs, filters.DownloaderID)
+		needsInstanceFilter = true
 	}
 	if filters.Status != "" {
-		where = append(where, "tr.status = ?")
-		args = append(args, filters.Status)
+		instanceWhere = append(instanceWhere, "ftr.status = ?")
+		instanceArgs = append(instanceArgs, filters.Status)
+		needsInstanceFilter = true
+	}
+	if needsInstanceFilter {
+		where = append(where, `EXISTS (
+            SELECT 1
+            FROM torrent_instances fti
+            LEFT JOIN torrent_runtime ftr ON ftr.instance_id = fti.id
+            WHERE `+strings.Join(instanceWhere, " AND ")+`
+        )`)
+		args = append(args, instanceArgs...)
+	}
+	if filters.Stale != nil {
+		expected := 0
+		if *filters.Stale {
+			expected = 1
+		}
+		where = append(where, "gm.stale = ?")
+		args = append(args, expected)
 	}
 	if filters.MissingSite != "" {
 		where = append(where, `NOT EXISTS (
             SELECT 1 FROM torrent_instances mti
             JOIN torrent_trackers mtt ON mtt.instance_id = mti.id
             JOIN sites ms ON ms.id = mtt.site_id
-            WHERE mti.content_group_id = cg.id AND mti.deleted_at IS NULL AND ms.name = ?
-        )`)
+		    WHERE mti.content_group_id = gm.id AND mti.deleted_at IS NULL AND ms.name = ?
+		)`)
 		args = append(args, filters.MissingSite)
 	}
-	if filters.Stale != nil {
-		operator := "<"
-		if !*filters.Stale {
-			operator = ">="
-		}
-		where = append(where, "COALESCE(d.last_success_at, 0) "+operator+" ?")
-		args = append(args, filters.StaleBefore.Unix())
+	for _, site := range siteAll {
+		where = append(where, groupSiteExistsPredicate("EXISTS", site))
+		args = append(args, site.value)
 	}
-
-	groupHaving := ""
+	for _, site := range siteNone {
+		where = append(where, groupSiteExistsPredicate("NOT EXISTS", site))
+		args = append(args, site.value)
+	}
 	if filters.MaxSiteCount != nil {
-		groupHaving = ` HAVING COUNT(DISTINCT CASE
-            WHEN tt.site_id IS NOT NULL THEN 'site:' || tt.site_id
-            ELSE 'unknown:' || tt.host_identity
-        END) <= ?`
+		where = append(where, "gm.site_count <= ?")
 		args = append(args, *filters.MaxSiteCount)
 	}
-	base := `
+	if filters.SizeLT != nil {
+		where = append(where, "gm.size_bytes < ?")
+		args = append(args, *filters.SizeLT)
+	}
+	if filters.OldestAddedGTE != nil {
+		where = append(where, "gm.oldest_added_at >= ?")
+		args = append(args, filters.OldestAddedGTE.Unix())
+	}
+	if filters.OldestAddedLT != nil {
+		where = append(where, "gm.oldest_added_at < ?")
+		args = append(args, filters.OldestAddedLT.Unix())
+	}
+
+	metricsCTE := `WITH group_metrics AS (
+		SELECT
+			cg.id, cg.display_name, MAX(ti.wanted_bytes) AS size_bytes,
+			COUNT(DISTINCT ti.id) AS task_count,
+			COUNT(DISTINCT CASE
+				WHEN tt.site_id IS NOT NULL THEN 'site:' || tt.site_id
+				ELSE 'unknown:' || tt.host_identity
+			END) AS site_count,
+			COUNT(DISTINCT ti.downloader_id) AS downloader_count,
+			COUNT(DISTINCT ti.data_group_id) AS data_copy_count,
+			cg.confidence, cg.mode, cg.locked, cg.version,
+			MAX(CASE WHEN COALESCE(d.last_success_at, 0) < ? THEN 1 ELSE 0 END) AS stale,
+			MIN(COALESCE(ti.added_at, ti.first_seen_at)) AS oldest_added_at,
+			cg.updated_at
         FROM content_groups cg
         JOIN torrent_instances ti ON ti.content_group_id = cg.id
         JOIN data_groups dg ON dg.id = ti.data_group_id
         JOIN downloaders d ON d.id = ti.downloader_id
-        LEFT JOIN torrent_runtime tr ON tr.instance_id = ti.id
         LEFT JOIN torrent_trackers tt ON tt.instance_id = ti.id
-        WHERE ` + strings.Join(where, " AND ") + `
-        GROUP BY cg.id` + groupHaving
+		WHERE cg.deleted_at IS NULL AND ti.deleted_at IS NULL
+		GROUP BY cg.id
+	)`
+	filtered := " FROM group_metrics gm WHERE " + strings.Join(where, " AND ")
+	baseArgs := append([]any{filters.StaleBefore.Unix()}, args...)
 
-	countQuery := "SELECT COUNT(*) FROM (SELECT cg.id " + base + ") groups_count"
+	countQuery := metricsCTE + " SELECT COUNT(*)" + filtered
 	var total int
-	if err := s.db.QueryRowContext(ctx, countQuery, args...).Scan(&total); err != nil {
+	if err := s.db.QueryRowContext(ctx, countQuery, baseArgs...).Scan(&total); err != nil {
 		return nil, 0, fmt.Errorf("count torrent groups: %w", err)
 	}
 
-	query := `SELECT
-			cg.id, cg.display_name, MAX(ti.wanted_bytes), COUNT(DISTINCT ti.id),
-            COUNT(DISTINCT CASE
-                WHEN tt.site_id IS NOT NULL THEN 'site:' || tt.site_id
-                ELSE 'unknown:' || tt.host_identity
-            END),
-            COUNT(DISTINCT ti.downloader_id), COUNT(DISTINCT ti.data_group_id),
-			cg.confidence, cg.mode, cg.locked, cg.version,
-			MAX(CASE WHEN COALESCE(d.last_success_at, 0) < ? THEN 1 ELSE 0 END),
-			MIN(COALESCE(ti.added_at, ti.first_seen_at)), cg.updated_at ` + base + ` ORDER BY ` + orderBy + ` LIMIT ? OFFSET ?`
-	queryArgs := append([]any{filters.StaleBefore.Unix()}, args...)
+	query := metricsCTE + ` SELECT
+		gm.id, gm.display_name, gm.size_bytes, gm.task_count, gm.site_count,
+		gm.downloader_count, gm.data_copy_count, gm.confidence, gm.mode, gm.locked,
+		gm.version, gm.stale, gm.oldest_added_at, gm.updated_at` + filtered +
+		" ORDER BY " + orderBy + " LIMIT ? OFFSET ?"
+	queryArgs := append([]any(nil), baseArgs...)
 	queryArgs = append(queryArgs, filters.Limit, filters.Offset)
 	rows, err := s.db.QueryContext(ctx, query, queryArgs...)
 	if err != nil {
 		return nil, 0, fmt.Errorf("list torrent groups: %w", err)
 	}
-	defer func() { _ = rows.Close() }()
 	groups := make([]TorrentGroup, 0)
 	for rows.Next() {
 		var group TorrentGroup
@@ -179,45 +270,265 @@ func (s *Store) ListTorrentGroups(ctx context.Context, filters GroupFilters) ([]
 			&group.DownloaderCount, &group.DataCopyCount, &group.Confidence, &group.Mode,
 			&locked, &group.Version, &stale, &oldestAddedAt, &updatedAt,
 		); err != nil {
+			_ = rows.Close()
 			return nil, 0, err
 		}
 		group.Locked = locked != 0
 		group.Stale = stale != 0
 		group.OldestAddedAt = time.Unix(oldestAddedAt, 0).UTC()
 		group.UpdatedAt = time.Unix(updatedAt, 0).UTC()
+		group.Sites = make([]TorrentGroupSite, 0)
 		groups = append(groups, group)
 	}
-	return groups, total, rows.Err()
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return nil, 0, err
+	}
+	if err := rows.Close(); err != nil {
+		return nil, 0, err
+	}
+	if err := s.populateTorrentGroupSites(ctx, groups); err != nil {
+		return nil, 0, err
+	}
+	return groups, total, nil
 }
 
-func torrentGroupOrderBy(sortBy, sortOrder string) (string, error) {
-	if sortBy == "" {
+func torrentGroupOrderBy(sorts []GroupSort, sortBy, sortOrder string) (string, error) {
+	if len(sorts) != 0 && (sortBy != "" || sortOrder != "") {
+		return "", fmt.Errorf("%w: legacy and multi-sort parameters cannot be combined", ErrInvalidGroupSort)
+	}
+	if len(sorts) == 0 && sortBy == "" {
 		if sortOrder != "" {
 			return "", fmt.Errorf("%w: sort_order requires sort_by", ErrInvalidGroupSort)
 		}
-		return "cg.updated_at DESC, cg.id ASC", nil
+		return "gm.updated_at DESC, gm.id ASC", nil
 	}
+	if len(sorts) == 0 {
+		sorts = []GroupSort{{Field: sortBy, Order: sortOrder}}
+	}
+	if len(sorts) > 4 {
+		return "", fmt.Errorf("%w: at most four sort levels are allowed", ErrInvalidGroupSort)
+	}
+	seen := make(map[string]struct{}, len(sorts))
+	parts := make([]string, 0, len(sorts)+1)
+	for _, item := range sorts {
+		expression := ""
+		switch item.Field {
+		case "oldest_added_at":
+			expression = "gm.oldest_added_at"
+		case "instance_count":
+			expression = "gm.task_count"
+		case "size":
+			expression = "gm.size_bytes"
+		case "name":
+			expression = "gm.display_name COLLATE NOCASE"
+		default:
+			return "", fmt.Errorf("%w: unsupported sort field", ErrInvalidGroupSort)
+		}
+		if _, duplicate := seen[item.Field]; duplicate {
+			return "", fmt.Errorf("%w: duplicate sort field", ErrInvalidGroupSort)
+		}
+		seen[item.Field] = struct{}{}
+		order := item.Order
+		if order == "" {
+			order = "asc"
+		}
+		if order != "asc" && order != "desc" {
+			return "", fmt.Errorf("%w: unsupported sort order", ErrInvalidGroupSort)
+		}
+		parts = append(parts, expression+" "+strings.ToUpper(order))
+	}
+	parts = append(parts, "gm.id ASC")
+	return strings.Join(parts, ", "), nil
+}
 
-	var expression string
-	switch sortBy {
-	case "oldest_added_at":
-		expression = "MIN(COALESCE(ti.added_at, ti.first_seen_at))"
-	case "instance_count":
-		expression = "COUNT(DISTINCT ti.id)"
-	case "size":
-		expression = "MAX(ti.wanted_bytes)"
-	case "name":
-		expression = "cg.display_name COLLATE NOCASE"
-	default:
-		return "", fmt.Errorf("%w: unsupported sort_by", ErrInvalidGroupSort)
+type groupSiteFilter struct {
+	key    string
+	value  string
+	mapped bool
+}
+
+func parseGroupSiteFilters(values []string) ([]groupSiteFilter, error) {
+	values = normalizedUniqueStrings(values)
+	result := make([]groupSiteFilter, 0, len(values))
+	seen := make(map[string]struct{}, len(values))
+	for _, key := range values {
+		var filter groupSiteFilter
+		switch {
+		case strings.HasPrefix(key, "site:"):
+			value := strings.TrimSpace(strings.TrimPrefix(key, "site:"))
+			if value == "" {
+				return nil, fmt.Errorf("%w: site key cannot be empty", ErrInvalidGroupFilter)
+			}
+			filter = groupSiteFilter{key: "site:" + value, value: value, mapped: true}
+		case strings.HasPrefix(key, "tracker:"):
+			value := strings.TrimSpace(strings.TrimPrefix(key, "tracker:"))
+			if value == "" {
+				return nil, fmt.Errorf("%w: tracker key cannot be empty", ErrInvalidGroupFilter)
+			}
+			host, err := privacySafeTrackerHost(value)
+			if err != nil || host != value {
+				return nil, fmt.Errorf("%w: tracker key must contain a canonical privacy-safe host", ErrInvalidGroupFilter)
+			}
+			filter = groupSiteFilter{key: "tracker:" + host, value: host}
+		default:
+			return nil, fmt.Errorf("%w: site key must use a site or tracker prefix", ErrInvalidGroupFilter)
+		}
+		if _, duplicate := seen[filter.key]; duplicate {
+			continue
+		}
+		seen[filter.key] = struct{}{}
+		result = append(result, filter)
 	}
-	if sortOrder == "" {
-		sortOrder = "asc"
+	return result, nil
+}
+
+func groupSiteExistsPredicate(operator string, filter groupSiteFilter) string {
+	condition := "stt.site_id IS NULL AND stt.host_identity = ?"
+	if filter.mapped {
+		condition = "stt.site_id IS NOT NULL AND ss.name = ?"
 	}
-	if sortOrder != "asc" && sortOrder != "desc" {
-		return "", fmt.Errorf("%w: unsupported sort_order", ErrInvalidGroupSort)
+	return operator + ` (
+            SELECT 1
+            FROM torrent_instances sti
+            JOIN torrent_trackers stt ON stt.instance_id = sti.id
+            LEFT JOIN sites ss ON ss.id = stt.site_id
+            WHERE sti.content_group_id = gm.id
+              AND sti.deleted_at IS NULL
+		      AND ` + condition + `
+        )`
+}
+
+func normalizedUniqueStrings(values []string) []string {
+	result := make([]string, 0, len(values))
+	seen := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		if _, exists := seen[value]; exists {
+			continue
+		}
+		seen[value] = struct{}{}
+		result = append(result, value)
 	}
-	return expression + " " + strings.ToUpper(sortOrder) + ", cg.id ASC", nil
+	return result
+}
+
+func (s *Store) populateTorrentGroupSites(ctx context.Context, groups []TorrentGroup) error {
+	if len(groups) == 0 {
+		return nil
+	}
+	placeholders := make([]string, len(groups))
+	args := make([]any, len(groups))
+	byGroup := make(map[string]map[string]TorrentGroupSite, len(groups))
+	for index := range groups {
+		placeholders[index] = "?"
+		args[index] = groups[index].ID
+		byGroup[groups[index].ID] = make(map[string]TorrentGroupSite)
+	}
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT ti.content_group_id, s.name, s.display_name, tt.host_identity
+		FROM torrent_instances ti
+		JOIN torrent_trackers tt ON tt.instance_id = ti.id
+		LEFT JOIN sites s ON s.id = tt.site_id
+		WHERE ti.deleted_at IS NULL AND ti.content_group_id IN (`+strings.Join(placeholders, ",")+`)`, args...)
+	if err != nil {
+		return fmt.Errorf("list torrent group sites: %w", err)
+	}
+	for rows.Next() {
+		var groupID, rawHost string
+		var siteName, displayName sql.NullString
+		if err := rows.Scan(&groupID, &siteName, &displayName, &rawHost); err != nil {
+			_ = rows.Close()
+			return fmt.Errorf("scan torrent group site: %w", err)
+		}
+		option, ok := torrentGroupSite(siteName, displayName, rawHost)
+		if !ok {
+			continue
+		}
+		byGroup[groupID][option.Key] = option
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return fmt.Errorf("iterate torrent group sites: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return fmt.Errorf("close torrent group sites: %w", err)
+	}
+	for index := range groups {
+		for _, option := range byGroup[groups[index].ID] {
+			groups[index].Sites = append(groups[index].Sites, option)
+		}
+		sortTorrentGroupSites(groups[index].Sites)
+	}
+	return nil
+}
+
+func (s *Store) ListTorrentGroupSiteOptions(ctx context.Context) ([]TorrentGroupSite, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT s.name, s.display_name, tt.host_identity
+		FROM torrent_instances ti
+		JOIN content_groups cg ON cg.id = ti.content_group_id
+		JOIN torrent_trackers tt ON tt.instance_id = ti.id
+		LEFT JOIN sites s ON s.id = tt.site_id
+		WHERE ti.deleted_at IS NULL AND cg.deleted_at IS NULL`)
+	if err != nil {
+		return nil, fmt.Errorf("list torrent group site options: %w", err)
+	}
+	unique := make(map[string]TorrentGroupSite)
+	for rows.Next() {
+		var rawHost string
+		var siteName, displayName sql.NullString
+		if err := rows.Scan(&siteName, &displayName, &rawHost); err != nil {
+			_ = rows.Close()
+			return nil, fmt.Errorf("scan torrent group site option: %w", err)
+		}
+		option, ok := torrentGroupSite(siteName, displayName, rawHost)
+		if ok {
+			unique[option.Key] = option
+		}
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return nil, fmt.Errorf("iterate torrent group site options: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, fmt.Errorf("close torrent group site options: %w", err)
+	}
+	result := make([]TorrentGroupSite, 0, len(unique))
+	for _, option := range unique {
+		result = append(result, option)
+	}
+	sortTorrentGroupSites(result)
+	return result, nil
+}
+
+func torrentGroupSite(siteName, displayName sql.NullString, rawHost string) (TorrentGroupSite, bool) {
+	if siteName.Valid && strings.TrimSpace(siteName.String) != "" {
+		label := strings.TrimSpace(displayName.String)
+		if label == "" {
+			label = siteName.String
+		}
+		return TorrentGroupSite{Key: "site:" + siteName.String, Label: label, Mapped: true}, true
+	}
+	host, err := privacySafeTrackerHost(rawHost)
+	if err != nil {
+		return TorrentGroupSite{}, false
+	}
+	return TorrentGroupSite{Key: "tracker:" + host, Label: "Unknown · " + host}, true
+}
+
+func sortTorrentGroupSites(sites []TorrentGroupSite) {
+	sort.Slice(sites, func(left, right int) bool {
+		leftFolded := strings.ToLower(sites[left].Label)
+		rightFolded := strings.ToLower(sites[right].Label)
+		if leftFolded != rightFolded {
+			return leftFolded < rightFolded
+		}
+		return sites[left].Key < sites[right].Key
+	})
 }
 
 func (s *Store) GetTorrentGroup(ctx context.Context, id string, staleBefore time.Time) (TorrentGroupDetail, error) {
