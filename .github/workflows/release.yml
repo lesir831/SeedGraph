@@ -182,7 +182,7 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           annotations: ${{ steps.meta.outputs.annotations }}
           cache-from: |
-            type=gha,scope=ci-main
+            type=gha,scope=publish-main
             type=gha,scope=release
           cache-to: type=gha,mode=max,scope=release
           provenance: mode=max

@@ -99,7 +99,7 @@ jobs:
         run: npm run build
 
   container:
-    name: Docker image
+    name: Docker validation
     needs: [backend, frontend]
     runs-on: ubuntu-24.04
     timeout-minutes: 25
@@ -113,9 +113,15 @@ jobs:
         run: docker compose --env-file .env.example config --quiet
 
       - name: Set up Docker Buildx
+        if: >-
+          github.ref != 'refs/heads/main' ||
+          (github.event_name != 'push' && github.event_name != 'workflow_dispatch')
         uses: docker/setup-buildx-action@v4
 
       - name: Build image
+        if: >-
+          github.ref != 'refs/heads/main' ||
+          (github.event_name != 'push' && github.event_name != 'workflow_dispatch')
         uses: docker/build-push-action@v7
         with:
           context: .
@@ -123,13 +129,16 @@ jobs:
           push: false
           tags: seedgraph:ci
           cache-from: |
-            type=gha,scope=ci-main
+            type=gha,scope=publish-main
             type=gha,scope=ci-${{ github.event.pull_request.number || 'main' }}
           cache-to: type=gha,mode=max,scope=ci-${{ github.event.pull_request.number || 'main' }}
           provenance: false
           sbom: false
 
       - name: Smoke-test image
+        if: >-
+          github.ref != 'refs/heads/main' ||
+          (github.event_name != 'push' && github.event_name != 'workflow_dispatch')
         shell: bash
         run: |
           set -Eeuo pipefail
@@ -217,11 +226,9 @@ jobs:
           images: ${{ steps.image.outputs.name }}
           flavor: latest=false
           tags: |
-            type=raw,value=latest
-            type=raw,value=edge
             type=sha,prefix=sha-
 
-      - name: Build and push image
+      - name: Build and push candidate image
         id: push
         uses: docker/build-push-action@v7
         with:
@@ -232,11 +239,103 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           annotations: ${{ steps.meta.outputs.annotations }}
           cache-from: |
-            type=gha,scope=ci-main
             type=gha,scope=publish-main
           cache-to: type=gha,mode=max,scope=publish-main
           provenance: mode=max
           sbom: true
+
+      - name: Verify candidate platforms
+        shell: bash
+        env:
+          IMAGE_NAME: ${{ steps.image.outputs.name }}
+          IMAGE_DIGEST: ${{ steps.push.outputs.digest }}
+        run: |
+          set -euo pipefail
+
+          manifest_file="$(mktemp)"
+          docker buildx imagetools inspect --raw "$IMAGE_NAME@$IMAGE_DIGEST" > "$manifest_file"
+          if ! jq -e '
+            def is_runtime($architecture):
+              .platform.os == "linux" and .platform.architecture == $architecture;
+            def is_attestation:
+              .platform.os == "unknown"
+              and .platform.architecture == "unknown"
+              and .annotations["vnd.docker.reference.type"] == "attestation-manifest";
+
+            (.mediaType == "application/vnd.oci.image.index.v1+json"
+              or .mediaType == "application/vnd.docker.distribution.manifest.list.v2+json")
+            and ([.manifests[] | select(is_runtime("amd64"))] | length == 1)
+            and ([.manifests[] | select(is_runtime("arm64"))] | length == 1)
+            and all(.manifests[]; is_runtime("amd64") or is_runtime("arm64") or is_attestation)
+          ' "$manifest_file" >/dev/null; then
+            echo "Candidate is not the expected amd64/arm64 image index."
+            jq -c '{mediaType, manifests: [.manifests[] | {
+              platform,
+              reference_type: .annotations["vnd.docker.reference.type"]
+            }]}' "$manifest_file" || true
+            exit 1
+          fi
+
+      - name: Smoke-test candidate platforms
+        shell: bash
+        env:
+          IMAGE_NAME: ${{ steps.image.outputs.name }}
+          IMAGE_DIGEST: ${{ steps.push.outputs.digest }}
+        run: |
+          set -Eeuo pipefail
+
+          container_id=""
+
+          cleanup() {
+            status=$?
+            trap - EXIT
+            if (( status != 0 )) && [[ -n "$container_id" ]]; then
+              echo "Container logs:"
+              docker logs "$container_id" || true
+            fi
+            if [[ -n "$container_id" ]]; then
+              docker rm --force "$container_id" >/dev/null 2>&1 || true
+            fi
+            exit "$status"
+          }
+          trap cleanup EXIT
+
+          platforms=(linux/amd64 linux/arm64)
+          ports=(18080 18081)
+          for index in "${!platforms[@]}"; do
+            platform="${platforms[$index]}"
+            port="${ports[$index]}"
+            echo "Smoke-testing $platform"
+            container_id="$(docker run --detach \
+              --platform "$platform" \
+              --publish "127.0.0.1:$port:8080" \
+              --env SEEDGRAPH_ADMIN_PASSWORD=ci-password \
+              --env SEEDGRAPH_SECRET_KEY=ci-only-secret-key-at-least-32-bytes \
+              --env "SEEDGRAPH_DATABASE_PATH=/tmp/seedgraph-ci-${platform//\//-}.db" \
+              --env SEEDGRAPH_COOKIE_SECURE=false \
+              --env SEEDGRAPH_IYUU_SYNC_ENABLED=false \
+              "$IMAGE_NAME@$IMAGE_DIGEST")"
+
+            healthy=false
+            for _ in {1..30}; do
+              if curl --fail --silent "http://127.0.0.1:$port/healthz" >/dev/null; then
+                healthy=true
+                break
+              fi
+              if [[ "$(docker inspect --format '{{.State.Running}}' "$container_id")" != "true" ]]; then
+                echo "$platform container exited before becoming healthy."
+                exit 1
+              fi
+              sleep 1
+            done
+            if [[ "$healthy" != "true" ]]; then
+              echo "Timed out waiting for $platform /healthz."
+              exit 1
+            fi
+
+            docker rm --force "$container_id" >/dev/null
+            container_id=""
+          done
 
       - name: Attest image provenance
         uses: actions/attest@v4
@@ -244,15 +343,38 @@ jobs:
           subject-name: ${{ steps.image.outputs.name }}
           subject-digest: ${{ steps.push.outputs.digest }}
 
-      - name: Summarize published image
+      - name: Promote candidate tags
         shell: bash
         env:
           IMAGE_NAME: ${{ steps.image.outputs.name }}
           IMAGE_DIGEST: ${{ steps.push.outputs.digest }}
         run: |
+          set -euo pipefail
+
+          metadata_file="$(mktemp)"
+          docker buildx imagetools create \
+            --tag "$IMAGE_NAME:latest" \
+            --tag "$IMAGE_NAME:edge" \
+            --metadata-file "$metadata_file" \
+            "$IMAGE_NAME@$IMAGE_DIGEST"
+
+          promoted_digest="$(jq -r '."containerimage.descriptor".digest' "$metadata_file")"
+          if [[ "$promoted_digest" != "$IMAGE_DIGEST" ]]; then
+            echo "Promoted digest $promoted_digest does not match candidate digest $IMAGE_DIGEST."
+            exit 1
+          fi
+
+      - name: Summarize published image
+        shell: bash
+        env:
+          IMAGE_NAME: ${{ steps.image.outputs.name }}
+          IMAGE_DIGEST: ${{ steps.push.outputs.digest }}
+          SHA_TAG: ${{ steps.meta.outputs.tags }}
+        run: |
           {
             echo "### Published main image"
             echo
             echo "- Mutable tags: \`$IMAGE_NAME:latest\`, \`$IMAGE_NAME:edge\`"
+            echo "- Tested candidate: \`$SHA_TAG\`"
             echo "- Immutable digest: \`$IMAGE_NAME@$IMAGE_DIGEST\`"
           } >> "$GITHUB_STEP_SUMMARY"

@@ -921,7 +921,7 @@ select {
   min-width: 0;
   padding: 10px;
   grid-template-columns: 28px minmax(150px, 0.9fr) minmax(126px, 0.7fr) minmax(220px, 1.65fr) auto;
-  align-items: center;
+  align-items: start;
   gap: 8px;
   background: #fbfcfe;
   border: 1px solid #e8edf4;
@@ -938,6 +938,7 @@ select {
   font-weight: 700;
   background: #edf2f8;
   border-radius: 50%;
+  margin-top: 4px;
 }
 
 .query-condition-value,

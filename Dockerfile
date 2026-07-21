@@ -1,21 +1,26 @@
 # syntax=docker/dockerfile:1.12
 
-FROM node:24-alpine AS frontend
+FROM --platform=$BUILDPLATFORM node:24-alpine AS frontend
 WORKDIR /src/frontend
 COPY frontend/package.json frontend/package-lock.json ./
-RUN --mount=type=cache,target=/root/.npm npm ci
+RUN --mount=type=cache,id=seedgraph-npm,target=/root/.npm,sharing=locked npm ci
 COPY frontend/ ./
 RUN npm run build
 
-FROM golang:1.24-alpine AS backend
+FROM --platform=$BUILDPLATFORM golang:1.24-alpine AS go-modules
 WORKDIR /src
 COPY go.mod go.sum ./
-RUN --mount=type=cache,target=/go/pkg/mod go mod download
+RUN go mod download \
+    && go mod verify
+
+FROM go-modules AS backend
+ARG TARGETOS
+ARG TARGETARCH
 COPY cmd/ ./cmd/
 COPY internal/ ./internal/
-RUN --mount=type=cache,target=/go/pkg/mod \
-    --mount=type=cache,target=/root/.cache/go-build \
-    CGO_ENABLED=0 go build -buildvcs=false -trimpath -ldflags="-s -w" -o /out/seedgraph ./cmd/seedgraph
+RUN --mount=type=cache,id=seedgraph-go-build-${TARGETOS}-${TARGETARCH},target=/root/.cache/go-build \
+    CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
+    go build -buildvcs=false -trimpath -ldflags="-s -w" -o /out/seedgraph ./cmd/seedgraph
 
 FROM alpine:3.22
 RUN apk add --no-cache ca-certificates tzdata \
