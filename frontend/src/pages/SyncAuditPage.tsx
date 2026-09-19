@@ -9,6 +9,7 @@ import {
   Descriptions,
   Progress,
   Row,
+  Select,
   Space,
   Table,
   Tag,
@@ -24,6 +25,7 @@ import { PageHeader } from '../components/PageHeader'
 import { PageState } from '../components/PageState'
 import { OperationBadge } from '../components/StatusTag'
 import { displayError, formatDateTime } from '../utils/format'
+import { useDeletionTasks } from '../deletion/deletion-context'
 
 const initialFilters: AuditFilters = { page: 1, pageSize: 20 }
 
@@ -34,15 +36,22 @@ const actionLabels: Record<string, string> = {
   'downloader.delete': '删除下载器',
   'group.merge': '手动合并',
   'group.split': '拆分任务组',
+  'group.move': '移动任务',
+  'group.undo': '撤销分组操作',
   'group.lock': '锁定任务组',
   'delete.plan': '生成删除预览',
+  'delete.started': '提交删除任务',
   'delete.completed': '删除完成',
+  'delete.failed': '删除失败',
+  'delete.uncertain': '删除结果待确认',
+  'iyuu.sync': 'IYUU 目录同步',
   login: '管理员登录',
 }
 
 export function SyncAuditPage() {
   const { message } = App.useApp()
   const queryClient = useQueryClient()
+  const { trackJob } = useDeletionTasks()
   const [filters, setFilters] = useState<AuditFilters>(initialFilters)
 
   const syncStatus = useQuery({
@@ -54,6 +63,7 @@ export function SyncAuditPage() {
     queryKey: ['audit-events', filters],
     queryFn: () => api.getAuditEvents(filters),
     select: (payload) => normalizePagedResponse(payload, filters.page, filters.pageSize),
+    refetchInterval: 15_000,
   })
 
   const runMutation = useMutation({
@@ -65,6 +75,12 @@ export function SyncAuditPage() {
         queryClient.invalidateQueries({ queryKey: ['audit-events'] }),
       ])
     },
+    onError: (error) => void message.error(displayError(error)),
+  })
+
+  const inspectDeletion = useMutation({
+    mutationFn: api.getDeleteJob,
+    onSuccess: trackJob,
     onError: (error) => void message.error(displayError(error)),
   })
 
@@ -180,9 +196,24 @@ export function SyncAuditPage() {
       </Row>
 
       <Card
-        title={<Space><AuditOutlined />审计记录 <Typography.Text type="secondary">（最近 200 条）</Typography.Text></Space>}
+        title={<Space><AuditOutlined />审计记录</Space>}
         className="table-card"
       >
+        <Space wrap className="audit-toolbar">
+          <Select
+            className="audit-filter" aria-label="筛选审计操作" placeholder="全部操作" allowClear showSearch optionFilterProp="label"
+            value={filters.action}
+            options={Object.entries(actionLabels).map(([value, label]) => ({ value, label }))}
+            onChange={(action) => setFilters((current) => ({ ...current, action, page: 1 }))}
+          />
+          <Select
+            className="audit-filter" aria-label="筛选审计结果" placeholder="全部结果" allowClear
+            value={filters.status}
+            options={[{ value: 'success', label: '成功' }, { value: 'failed', label: '失败' }, { value: 'warning', label: '有警告' }]}
+            onChange={(status) => setFilters((current) => ({ ...current, status, page: 1 }))}
+          />
+          <Button disabled={!filters.action && !filters.status} onClick={() => setFilters((current) => ({ page: 1, pageSize: current.pageSize }))}>重置筛选</Button>
+        </Space>
         <PageState
           loading={audit.isLoading}
           error={audit.error}
@@ -195,13 +226,26 @@ export function SyncAuditPage() {
             columns={columns}
             dataSource={audit.data?.items}
             scroll={{ x: 940 }}
+            expandable={{
+              expandedRowRender: (event) => (
+                <Descriptions size="small" column={1} className="audit-details">
+                  <Descriptions.Item label="记录编号"><Typography.Text copyable>{event.id}</Typography.Text></Descriptions.Item>
+                  <Descriptions.Item label="对象编号"><Typography.Text copyable={Boolean(event.resourceName)}>{event.resourceName || '—'}</Typography.Text></Descriptions.Item>
+                  <Descriptions.Item label="完整说明">{event.message || '—'}</Descriptions.Item>
+                  <Descriptions.Item label="操作详情"><pre>{JSON.stringify(event.details, null, 2)}</pre></Descriptions.Item>
+                  {event.resourceType === 'delete_job' && event.resourceName && (
+                    <Descriptions.Item label="执行记录"><Button size="small" loading={inspectDeletion.isPending && inspectDeletion.variables === event.resourceName} onClick={() => inspectDeletion.mutate(event.resourceName)}>查看删除进度</Button></Descriptions.Item>
+                  )}
+                </Descriptions>
+              ),
+            }}
             pagination={{
               current: audit.data?.page ?? filters.page,
               pageSize: audit.data?.pageSize ?? filters.pageSize,
               total: audit.data?.total ?? 0,
               showSizeChanger: true,
               showTotal: (total) => `共 ${total} 条记录`,
-              onChange: (page, pageSize) => setFilters((current) => ({ ...current, page, pageSize })),
+              onChange: (page, pageSize) => setFilters((current) => ({ ...current, page: pageSize === current.pageSize ? page : 1, pageSize })),
             }}
           />
         </PageState>

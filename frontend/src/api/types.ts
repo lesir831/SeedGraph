@@ -228,6 +228,17 @@ export interface DeleteJob {
   status: 'pending' | 'executing' | 'verifying' | 'completed' | 'failed' | 'uncertain'
   error?: string
   createdAt: string
+  updatedAt?: string
+  completedAt?: string
+  steps: Array<{
+    id: string
+    order: number
+    instanceId: string
+    downloaderId: string
+    deleteData: boolean
+    status: DeleteJob['status']
+    error?: string
+  }>
 }
 
 export interface Downloader {
@@ -383,6 +394,7 @@ export interface AuditEvent {
   message: string
   actor: string
   occurredAt: string
+  details: Record<string, unknown>
 }
 
 export interface AuditFilters {

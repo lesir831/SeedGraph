@@ -211,8 +211,9 @@ func (s *Server) handleError(w http.ResponseWriter, r *http.Request, err error) 
 		writeAPIError(w, http.StatusNotFound, "not_found", "资源不存在")
 	case errors.Is(err, store.ErrInvalidGroupFilter), errors.Is(err, store.ErrInvalidGroupSort):
 		writeAPIError(w, http.StatusBadRequest, "invalid_query", err.Error())
-	case errors.Is(err, store.ErrVersionConflict), errors.Is(err, syncer.ErrAlreadyRunning),
-		errors.Is(err, deletion.ErrPlanChanged):
+	case errors.Is(err, deletion.ErrPlanChanged):
+		writeAPIError(w, http.StatusConflict, "plan_changed", "任务状态已变化，请重新生成删除预览并确认")
+	case errors.Is(err, store.ErrVersionConflict), errors.Is(err, syncer.ErrAlreadyRunning):
 		writeAPIError(w, http.StatusConflict, "conflict", err.Error())
 	case errors.Is(err, deletion.ErrPlanExpired):
 		writeAPIError(w, http.StatusGone, "plan_expired", "删除预览已过期，请重新生成")

@@ -105,7 +105,7 @@ func (s *Store) ListAuditEvents(ctx context.Context, limit int) ([]AuditEvent, e
 	}
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id, actor, action, status, target_type, target_id, details_json, created_at
-        FROM audit_logs ORDER BY created_at DESC LIMIT ?`, limit)
+        FROM audit_logs ORDER BY created_at DESC, rowid DESC LIMIT ?`, limit)
 	if err != nil {
 		return nil, fmt.Errorf("list audit events: %w", err)
 	}
@@ -156,7 +156,7 @@ func (s *Store) ListAuditEventsPage(ctx context.Context, action, status string, 
 	queryArgs := append(append([]any(nil), args...), limit, offset)
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id, actor, action, status, target_type, target_id, details_json, created_at
-        FROM audit_logs`+where+` ORDER BY created_at DESC LIMIT ? OFFSET ?`, queryArgs...)
+        FROM audit_logs`+where+` ORDER BY created_at DESC, rowid DESC LIMIT ? OFFSET ?`, queryArgs...)
 	if err != nil {
 		return nil, 0, fmt.Errorf("list audit events: %w", err)
 	}

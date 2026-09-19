@@ -8,6 +8,7 @@ import { TorrentGroupsPage } from './pages/TorrentGroupsPage'
 import { DownloadersPage } from './pages/DownloadersPage'
 import { TrackerRulesPage } from './pages/TrackerRulesPage'
 import { SyncAuditPage } from './pages/SyncAuditPage'
+import { DeletionTasksProvider } from './deletion/DeletionTasksProvider'
 
 function ProtectedLayout() {
   const { authenticated, checking } = useAuth()
@@ -24,7 +25,7 @@ function ProtectedLayout() {
   }
 
   if (!authenticated) return <Navigate to="/login" state={{ from: location }} replace />
-  return <AppShell />
+  return <DeletionTasksProvider><AppShell /></DeletionTasksProvider>
 }
 
 export function App() {

@@ -112,6 +112,10 @@ func (s *Service) CreateJob(ctx context.Context, planID, idempotencyKey string) 
 		return store.DeleteJob{}, err
 	}
 	if created {
+		_ = s.store.AddAuditEvent(context.Background(), store.AuditEvent{
+			Actor: "admin", Action: "delete.started", TargetType: "delete_job", TargetID: job.ID,
+			Details: map[string]any{"instances": saved.Plan.SelectedInstanceIDs, "message": "删除任务已提交，等待执行与结果校验"},
+		})
 		s.workers.Add(1)
 		go func() {
 			defer s.workers.Done()
@@ -135,6 +139,15 @@ func (s *Service) execute(ctx context.Context, jobID string, saved store.SavedDe
 	fail := func(status string, err error) {
 		message := safeMessage(err)
 		_ = s.store.UpdateDeleteJobStatus(context.Background(), jobID, status, message, true)
+		auditStatus := "failed"
+		if status == "uncertain" {
+			auditStatus = "warning"
+		}
+		_ = s.store.AddAuditEvent(context.Background(), store.AuditEvent{
+			Actor: "admin", Action: "delete." + status, Status: auditStatus,
+			TargetType: "delete_job", TargetID: jobID,
+			Details: map[string]any{"instances": saved.Plan.SelectedInstanceIDs, "error": message},
+		})
 		s.logger.Warn("delete job stopped", "job_id", jobID, "status", status, "error", message)
 	}
 	claimed, err := s.store.ClaimDeleteJob(ctx, jobID)

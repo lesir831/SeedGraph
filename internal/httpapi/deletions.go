@@ -20,6 +20,14 @@ func (s *Server) createDeletePlan(w http.ResponseWriter, r *http.Request) {
 		s.handleError(w, r, err)
 		return
 	}
+	status := "success"
+	if !saved.Plan.Executable {
+		status = "warning"
+	}
+	_ = s.store.AddAuditEvent(r.Context(), store.AuditEvent{
+		Actor: "admin", Action: "delete.plan", Status: status, TargetType: "delete_plan", TargetID: saved.Plan.ID,
+		Details: map[string]any{"instances": saved.Plan.SelectedInstanceIDs, "executable": saved.Plan.Executable, "blockers": saved.Plan.Blockers},
+	})
 	writeData(w, http.StatusCreated, saved.Plan)
 }
 
@@ -58,5 +66,6 @@ func jobResponse(job store.DeleteJob) map[string]any {
 		"id": job.ID, "plan_id": job.PlanID, "status": normalizeJobStatus(job.Status),
 		"internal_status": job.Status, "error": job.Error,
 		"steps": job.Steps, "created_at": job.CreatedAt, "updated_at": job.UpdatedAt,
+		"completed_at": job.CompletedAt,
 	}
 }

@@ -1702,3 +1702,151 @@ select {
     transition-duration: 0.01ms !important;
   }
 }
+
+.delete-task-group-name,
+.delete-task-option-name,
+.delete-task-option small {
+  overflow-wrap: anywhere;
+}
+
+.delete-task-options {
+  display: grid;
+  gap: 8px;
+  width: 100%;
+  max-height: 320px;
+  overflow-y: auto;
+}
+
+.delete-task-option.ant-checkbox-wrapper {
+  align-items: flex-start;
+  margin: 0;
+  padding: 12px;
+  border: 1px solid #e5eaf2;
+  border-radius: 10px;
+}
+
+.delete-task-option > span:last-child {
+  display: grid;
+  flex: 1;
+  min-width: 0;
+  gap: 4px;
+}
+
+.delete-task-option-heading {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.delete-task-option small {
+  color: #6b7890;
+}
+
+.audit-toolbar {
+  padding: 16px 24px;
+}
+
+.audit-details pre {
+  margin: 0;
+  max-height: 320px;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.deletion-widget {
+  position: fixed;
+  right: 24px;
+  bottom: 24px;
+  z-index: 950;
+  width: 380px;
+  max-width: calc(100% - 32px);
+  color: #25324a;
+  background: #fff;
+  border: 1px solid #e5eaf2;
+  border-radius: 18px;
+  box-shadow: 0 12px 40px rgb(21 40 77 / 16%);
+}
+
+.deletion-widget-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 16px;
+  border-bottom: 1px solid #edf0f5;
+}
+
+.deletion-widget-header > div:first-child {
+  display: grid;
+  gap: 4px;
+  margin-right: auto;
+}
+
+.deletion-widget-body {
+  max-height: min(420px, 55vh);
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+
+.deletion-job {
+  display: grid;
+  gap: 10px;
+  padding: 16px;
+  overflow-wrap: anywhere;
+}
+
+.deletion-job + .deletion-job {
+  border-top: 1px solid #edf0f5;
+}
+
+.deletion-job-heading {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.deletion-step-list {
+  margin: 0;
+  padding-left: 18px;
+}
+
+.deletion-step-list li + li {
+  margin-top: 12px;
+}
+
+.deletion-step-list .ant-typography {
+  display: block;
+  font-size: 12px;
+}
+
+.deletion-widget-collapsed {
+  width: auto;
+  border-radius: 999px;
+}
+
+.deletion-widget-toggle {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 16px 10px 10px;
+  color: inherit;
+  font: inherit;
+  background: none;
+  border: 0;
+  border-radius: inherit;
+  cursor: pointer;
+}
+
+.deletion-widget-toggle:focus-visible {
+  outline: 2px solid #1677ff;
+  outline-offset: 3px;
+}
+
+@media (max-width: 767px) {
+  .deletion-widget {
+    right: 16px;
+    bottom: max(16px, env(safe-area-inset-bottom));
+  }
+}

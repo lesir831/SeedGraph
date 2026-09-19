@@ -201,9 +201,21 @@ export interface WireDeletePlan {
 export interface WireDeleteJob {
   id: string
   plan_id: string
-  status: DeleteJob['status']
+  status: DeleteJob['status'] | 'running'
+  internal_status?: DeleteJob['status']
   error?: string
   created_at: string
+  updated_at?: string
+  completed_at?: string | null
+  steps?: Array<{
+    id: string
+    position: number
+    instance_id: string
+    downloader_id: string
+    delete_data: boolean
+    status: DeleteJob['status']
+    error?: string
+  }> | null
 }
 
 export interface GroupSummary {
@@ -403,6 +415,7 @@ export const toAuditEvent = (wire: WireAuditEvent): AuditEvent => {
     message,
     actor: wire.actor ?? 'system',
     occurredAt: wire.created_at,
+    details,
   }
 }
 
@@ -433,9 +446,20 @@ export const toDeletePlan = (wire: WireDeletePlan, groupId: string): DeletePlan 
 export const toDeleteJob = (wire: WireDeleteJob): DeleteJob => ({
   id: wire.id,
   planId: wire.plan_id,
-  status: wire.status,
+  status: wire.internal_status ?? (wire.status === 'running' ? 'executing' : wire.status),
   error: wire.error,
   createdAt: wire.created_at,
+  updatedAt: wire.updated_at,
+  completedAt: wire.completed_at ?? undefined,
+  steps: (wire.steps ?? []).map((step) => ({
+    id: step.id,
+    order: step.position,
+    instanceId: step.instance_id,
+    downloaderId: step.downloader_id,
+    deleteData: step.delete_data,
+    status: step.status,
+    error: step.error,
+  })),
 })
 
 export const summarizeGroup = (group: TorrentGroup): GroupSummary => {

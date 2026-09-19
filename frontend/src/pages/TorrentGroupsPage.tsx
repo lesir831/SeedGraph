@@ -7,7 +7,6 @@ import {
   LockOutlined,
   MergeCellsOutlined,
   ReloadOutlined,
-  SafetyCertificateOutlined,
   SortAscendingOutlined,
   SwapOutlined,
   UnlockOutlined,
@@ -41,7 +40,6 @@ import { useMemo, useState, type Key, type ReactNode } from 'react'
 import { api } from '../api/client'
 import { normalizePagedResponse } from '../api/transformers'
 import type {
-  DeletePlan,
   GroupFilters,
   GroupSiteSummary,
   GroupSortRule,
@@ -52,9 +50,11 @@ import { GroupAdvancedSearchDrawer } from '../components/GroupAdvancedSearchDraw
 import { GroupSortDrawer } from '../components/GroupSortDrawer'
 import { PageHeader } from '../components/PageHeader'
 import { PageState } from '../components/PageState'
-import { displayError, formatBytes, formatDateTime, formatDeleteBlocker, formatPercent } from '../utils/format'
+import { displayError, formatBytes, formatDateTime } from '../utils/format'
 import { countGroupQueryConditions, summarizeGroupQuery } from '../utils/groupQuery'
 import { GROUP_SORT_LABELS, loadGroupSorts, saveGroupSorts } from '../utils/groupSortPreferences'
+import { useDeletionTasks } from '../deletion/deletion-context'
+import { DeleteTasksModal } from '../deletion/DeleteTasksModal'
 
 const initialFilters: GroupFilters = {
   status: 'all',
@@ -111,48 +111,10 @@ function GroupDetailsLoader({ groupId, children }: { groupId: string; children: 
   )
 }
 
-function DeletePlanBlockerDetails({ blockers }: { blockers: DeletePlan['blockers'] }) {
-  const conflictingTasks = blockers.filter((blocker) => blocker.code === 'conflicting_path_occupant')
-  const otherMessages = Array.from(new Set(
-    blockers
-      .filter((blocker) => blocker.code !== 'conflicting_path_occupant')
-      .map((blocker) => formatDeleteBlocker(blocker.code, blocker.message)),
-  ))
-
-  return (
-    <Space direction="vertical" size={8} className="delete-blocker-details">
-      {otherMessages.length > 0 && <Typography.Text>{otherMessages.join('；')}</Typography.Text>}
-      {conflictingTasks.length > 0 && (
-        <div className="delete-conflict-section">
-          <Typography.Text strong>检测到 {conflictingTasks.length} 个文件冲突任务</Typography.Text>
-          <List
-            className="delete-conflict-list"
-            size="small"
-            bordered
-            dataSource={conflictingTasks}
-            renderItem={(blocker) => (
-              <List.Item key={blocker.instanceId ?? `${blocker.downloaderId}-${blocker.path}`}>
-                <Space direction="vertical" size={0} className="delete-conflict-item">
-                  <Typography.Text strong>{blocker.instanceName ?? blocker.instanceId ?? '未知任务'}</Typography.Text>
-                  <Typography.Text type="secondary">
-                    下载器：{blocker.downloaderName ?? blocker.downloaderId ?? '未知下载器'}
-                  </Typography.Text>
-                  <Typography.Text className="delete-conflict-path" copyable={Boolean(blocker.path)}>
-                    {blocker.path ?? '路径信息不可用'}
-                  </Typography.Text>
-                </Space>
-              </List.Item>
-            )}
-          />
-        </div>
-      )}
-    </Space>
-  )
-}
-
 export function TorrentGroupsPage() {
   const { message } = App.useApp()
   const queryClient = useQueryClient()
+  const { trackJob } = useDeletionTasks()
   const screens = Grid.useBreakpoint()
   const isMobile = !screens.md
   const [filters, setFilters] = useState<GroupFilters>(() => ({
@@ -167,9 +129,7 @@ export function TorrentGroupsPage() {
   const [selectedGroups, setSelectedGroups] = useState<TorrentGroup[]>([])
   const [mergeOpen, setMergeOpen] = useState(false)
   const [mergeForm] = Form.useForm<MergeFormValues>()
-  const [deleteGroup, setDeleteGroup] = useState<TorrentGroup>()
-  const [deleteInstanceIds, setDeleteInstanceIds] = useState<string[]>([])
-  const [deletePlan, setDeletePlan] = useState<DeletePlan>()
+  const [deleteSelection, setDeleteSelection] = useState<{ group: TorrentGroup; instanceIds: string[] }>()
   const [detailLoadingId, setDetailLoadingId] = useState<string>()
 	const [moveSelection, setMoveSelection] = useState<MoveSelection>()
 	const [moveTargetId, setMoveTargetId] = useState<string>()
@@ -289,55 +249,29 @@ export function TorrentGroupsPage() {
     onError: (error) => void message.error(displayError(error)),
   })
 
-  const planMutation = useMutation({
-    mutationFn: api.createDeletePlan,
-    onSuccess: setDeletePlan,
-    onError: (error) => void message.error(displayError(error)),
-  })
-
-  const jobMutation = useMutation({
-    mutationFn: api.createDeleteJob,
-    onSuccess: async () => {
-      void message.success('删除任务已提交，可在审计页查看进度')
-      closeDeleteModal()
-      await invalidateGroups()
-    },
-    onError: (error) => void message.error(displayError(error)),
-  })
-
   const openDeleteModal = async (group: TorrentGroup, instanceId?: string) => {
+    if (detailLoadingId || deleteSelection) return
     setDetailLoadingId(group.id)
     try {
-      const detail = group.instances.length
-        ? group
-        : await queryClient.fetchQuery({
-          queryKey: ['torrent-group', group.id],
-          queryFn: () => api.getGroup(group.id),
-        })
-      setDeleteGroup(detail)
-      setDeleteInstanceIds(instanceId ? [instanceId] : [])
-      setDeletePlan(undefined)
+      const detail = await queryClient.fetchQuery({
+        queryKey: ['torrent-group', group.id],
+        queryFn: () => api.getGroup(group.id),
+        staleTime: 0,
+      })
+      const instanceIds = detail.instances
+        .filter((instance) => !instanceId || instance.id === instanceId)
+        .map((instance) => instance.id)
+      if (!instanceIds.length) {
+        void message.info('任务已不存在，请刷新列表')
+        await invalidateGroups()
+        return
+      }
+      setDeleteSelection({ group: detail, instanceIds })
     } catch (error) {
       void message.error(displayError(error))
     } finally {
       setDetailLoadingId(undefined)
     }
-  }
-
-  const closeDeleteModal = () => {
-    setDeleteGroup(undefined)
-    setDeleteInstanceIds([])
-    setDeletePlan(undefined)
-    planMutation.reset()
-    jobMutation.reset()
-  }
-
-  const generateDeletePlan = () => {
-    if (!deleteGroup || !deleteInstanceIds.length) return
-    planMutation.mutate({
-      groupId: deleteGroup.id,
-      instanceIds: deleteInstanceIds,
-    })
   }
 
   const instanceColumns = (group: TorrentGroup): TableColumnsType<TorrentInstance> => [
@@ -421,8 +355,8 @@ export function TorrentGroupsPage() {
 			>
 				移动
 			</Button>
-          <Button type="text" danger size="small" icon={<DeleteOutlined />} onClick={() => void openDeleteModal(group, instance.id)}>
-            预览删除
+          <Button type="text" danger size="small" aria-label="删除此任务" icon={<DeleteOutlined />} onClick={() => void openDeleteModal(group, instance.id)}>
+            删除
           </Button>
         </Space>
       ),
@@ -459,9 +393,10 @@ export function TorrentGroupsPage() {
         size="small"
         icon={<DeleteOutlined />}
         loading={detailLoadingId === group.id}
+        aria-label="删除任务组"
         onClick={() => void openDeleteModal(group)}
       >
-        删除预览
+        删除
       </Button>
     </Space>
   )
@@ -594,8 +529,8 @@ export function TorrentGroupsPage() {
         >
           移动
         </Button>
-        <Button type="text" danger size="small" icon={<DeleteOutlined />} onClick={() => void openDeleteModal(group, instance.id)}>
-          预览删除
+        <Button type="text" danger size="small" aria-label="删除此任务" icon={<DeleteOutlined />} onClick={() => void openDeleteModal(group, instance.id)}>
+          删除
         </Button>
       </div>
     </Card>
@@ -904,100 +839,18 @@ export function TorrentGroupsPage() {
 			</Space>
 		</Modal>
 
-      <Modal
-        width={760}
-        title="安全删除预览"
-        open={Boolean(deleteGroup)}
-        onCancel={closeDeleteModal}
-        footer={
-          deletePlan ? (
-            <Space>
-              <Button onClick={() => setDeletePlan(undefined)}>返回修改</Button>
-              <Popconfirm
-                title="确认执行这份删除计划？"
-                description="服务端会再次校验版本和下载器快照；计划中的数据删除步骤不可撤销。"
-                okText="确认执行"
-                cancelText="取消"
-                okButtonProps={{ danger: true }}
-                onConfirm={() => jobMutation.mutate(deletePlan)}
-              >
-                <Button danger type="primary" disabled={!deletePlan.executable} loading={jobMutation.isPending}>执行删除计划</Button>
-              </Popconfirm>
-            </Space>
-          ) : (
-            <Space>
-              <Button onClick={closeDeleteModal}>取消</Button>
-              <Button type="primary" disabled={!deleteInstanceIds.length} loading={planMutation.isPending} onClick={generateDeletePlan}>
-                生成影响预览
-              </Button>
-            </Space>
-          )
-        }
-      >
-        {deleteGroup && !deletePlan && (
-          <Space direction="vertical" size={16} className="modal-stack">
-            <Alert
-              type="warning"
-              showIcon
-              message="先选择要移除的下载器实例"
-              description="SeedGraph 会让服务端生成不可变的删除计划。只有确认预览后，才会提交实际删除任务。"
-            />
-            <Checkbox.Group value={deleteInstanceIds} onChange={(values) => setDeleteInstanceIds(values.map(String))} className="instance-checkboxes">
-              {deleteGroup.instances.map((instance) => (
-                <Checkbox key={instance.id} value={instance.id}>
-                  <span><strong>{instance.downloaderName}</strong> · {instance.name}</span>
-                  <small>{instance.savePath} · {formatPercent(instance.progress)}</small>
-                </Checkbox>
-              ))}
-            </Checkbox.Group>
-            <Typography.Text type="secondary">
-              是否删除物理数据由服务端依据 DataGroup 引用计数决定，客户端不能绕过安全判断。
-            </Typography.Text>
-          </Space>
-        )}
-
-        {deletePlan && (
-          <Space direction="vertical" size={16} className="modal-stack">
-            <Alert
-              type={deletePlan.executable ? 'success' : 'error'}
-              showIcon
-              message={deletePlan.executable ? '删除计划已通过安全检查' : '当前计划不可执行'}
-              description={
-                deletePlan.blockers.length
-                  ? <DeletePlanBlockerDetails blockers={deletePlan.blockers} />
-                  : '提交任务时服务端仍会重新校验版本、下载器在线状态和存储快照。'
-              }
-            />
-            <Descriptions bordered size="small" column={{ xs: 1, sm: 2 }}>
-              <Descriptions.Item label="选中实例">{deletePlan.selectedInstanceIds.length} 个</Descriptions.Item>
-              <Descriptions.Item label="执行步骤">{deletePlan.steps.length} 步</Descriptions.Item>
-              <Descriptions.Item label="删除物理数据">{deletePlan.steps.filter((step) => step.deleteData).length} 步</Descriptions.Item>
-              <Descriptions.Item label="计划编号"><Typography.Text copyable>{deletePlan.id}</Typography.Text></Descriptions.Item>
-            </Descriptions>
-            <div>
-              <Typography.Title level={5}><SafetyCertificateOutlined /> 有序执行步骤</Typography.Title>
-              <List
-                size="small"
-                bordered
-                dataSource={deletePlan.steps}
-                locale={{ emptyText: '没有可执行的删除步骤' }}
-                renderItem={(step) => (
-                  <List.Item extra={step.deleteData ? <Tag color="error">删除数据</Tag> : <Tag>仅删任务</Tag>}>
-                    <Space direction="vertical" size={0}>
-                      <span>第 {step.order} 步 · {deleteGroup?.instances.find((item) => item.id === step.instanceId)?.name ?? step.instanceId}</span>
-                      <Typography.Text type="secondary">下载器 {step.downloaderId} · DataGroup {step.dataGroupId}</Typography.Text>
-                    </Space>
-                  </List.Item>
-                )}
-              />
-            </div>
-          </Space>
-        )}
-
-        {(planMutation.error || jobMutation.error) && (
-          <Alert className="modal-error" type="error" showIcon message="操作失败" description={displayError(planMutation.error || jobMutation.error)} />
-        )}
-      </Modal>
+      {deleteSelection && (
+        <DeleteTasksModal
+          group={deleteSelection.group}
+          initialInstanceIds={deleteSelection.instanceIds}
+          onClose={() => setDeleteSelection(undefined)}
+          onSubmitted={async (job) => {
+            trackJob(job)
+            setDeleteSelection(undefined)
+            await invalidateGroups()
+          }}
+        />
+      )}
     </div>
   )
 }

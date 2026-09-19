@@ -206,6 +206,20 @@ func TestExecuteMarksRemoteTimeoutUncertainWithoutContinuing(t *testing.T) {
 	if uncertain.Steps[0].Status != "uncertain" || uncertain.Steps[1].Status != "pending" {
 		t.Fatalf("step states after timeout = %+v", uncertain.Steps)
 	}
+	events, total, err := database.ListAuditEventsPage(context.Background(), "delete.uncertain", "warning", 20, 0)
+	if err != nil || total != 1 || events[0].TargetID != job.ID || events[0].Details["error"] == "" {
+		t.Fatalf("uncertain outcome missing from audit: %+v, total=%d, err=%v", events, total, err)
+	}
+}
+
+func TestExecuteRecordsFailureInAudit(t *testing.T) {
+	database, saved, job := newDeleteExecutionFixture(t, 1)
+	service := New(database, nil, nil, 5*time.Minute)
+	service.execute(context.Background(), job.ID, saved)
+	events, total, err := database.ListAuditEventsPage(context.Background(), "delete.failed", "failed", 20, 0)
+	if err != nil || total != 1 || events[0].TargetID != job.ID || events[0].Details["error"] == "" {
+		t.Fatalf("failed outcome missing from audit: %+v, total=%d, err=%v", events, total, err)
+	}
 }
 
 func TestExecuteMarksMissingPostDeleteEvidenceUncertain(t *testing.T) {

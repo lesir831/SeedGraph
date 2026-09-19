@@ -6,6 +6,34 @@ afterEach(() => {
   sessionStorage.clear()
 })
 
+describe('audit and deletion APIs', () => {
+  it('uses server pagination and filters without truncating history to 200 records', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({ data: {
+      items: [{ id: 'event', action: 'delete.uncertain', status: 'warning', created_at: 'now', details: { instances: ['instance'] } }],
+      total: 251, limit: 20, offset: 200,
+    } }), { headers: { 'content-type': 'application/json' } }))
+
+    const result = await api.getAuditEvents({ action: 'delete.uncertain', status: 'warning', page: 11, pageSize: 20 })
+    const requestInput = fetchMock.mock.calls[0][0]
+    if (typeof requestInput !== 'string') throw new TypeError('expected a URL string')
+    const url = new URL(requestInput, window.location.origin)
+    expect(Object.fromEntries(url.searchParams)).toEqual({ action: 'delete.uncertain', status: 'warning', limit: '20', offset: '200' })
+    expect(result).toMatchObject({ total: 251, page: 11, pageSize: 20, items: [{ id: 'event', details: { instances: ['instance'] } }] })
+  })
+
+  it('keeps an identical idempotency key when retrying a submitted deletion', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(() => Promise.resolve(new Response(JSON.stringify({
+      id: 'job', plan_id: 'plan', status: 'running', internal_status: 'verifying', created_at: 'now', steps: [],
+    }), { headers: { 'content-type': 'application/json' } })))
+    await api.createDeleteJob({ id: 'plan' })
+    const result = await api.createDeleteJob({ id: 'plan' })
+    expect(result.status).toBe('verifying')
+    for (const [, options] of fetchMock.mock.calls) {
+      expect(new Headers(options?.headers).get('Idempotency-Key')).toBe('delete-plan:plan')
+    }
+  })
+})
+
 describe('torrent group API', () => {
   it('sends the selected server-side sort and pagination parameters', async () => {
     const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({

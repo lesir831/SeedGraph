@@ -425,15 +425,12 @@ export const api = {
     toSyncStatus(await request<WireSyncStatus>('/sync/run', { method: 'POST' })),
   getAuditEvents: async (filters: AuditFilters): Promise<PagedResponse<AuditEvent>> => {
     const wire = await request<WirePagedResponse<WireAuditEvent> | WireAuditEvent[]>('/audit-events', {
-      query: { limit: 200, offset: 0 },
+      query: {
+        action: filters.action,
+        status: filters.status === 'all' ? undefined : filters.status,
+        ...getPage(filters.page, filters.pageSize),
+      },
     })
-    const recent = normalizeWirePage(wire, toAuditEvent, 1, 200).items
-    const start = (filters.page - 1) * filters.pageSize
-    return {
-      items: recent.slice(start, start + filters.pageSize),
-      total: recent.length,
-      page: filters.page,
-      pageSize: filters.pageSize,
-    }
+    return normalizeWirePage(wire, toAuditEvent, filters.page, filters.pageSize)
   },
 }
