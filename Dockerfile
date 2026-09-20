@@ -1,13 +1,13 @@
 # syntax=docker/dockerfile:1.12
 
-FROM --platform=$BUILDPLATFORM node:24-alpine AS frontend
+FROM --platform=$BUILDPLATFORM node:25-alpine AS frontend
 WORKDIR /src/frontend
 COPY frontend/package.json frontend/package-lock.json ./
 RUN --mount=type=cache,target=/root/.npm npm ci
 COPY frontend/ ./
 RUN npm run build
 
-FROM --platform=$BUILDPLATFORM golang:1.24-alpine AS go-modules
+FROM --platform=$BUILDPLATFORM golang:1.25-alpine AS go-modules
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download \
