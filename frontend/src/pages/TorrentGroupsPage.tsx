@@ -36,7 +36,7 @@ import {
   Typography,
   type TableColumnsType,
 } from 'antd'
-import { useMemo, useRef, useState, type ReactNode } from 'react'
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { api } from '../api/client'
 import { normalizePagedResponse } from '../api/transformers'
 import type {
@@ -180,6 +180,11 @@ export function TorrentGroupsPage() {
     queryFn: () => api.getGroups(filters),
     select: (payload) => normalizePagedResponse(payload, filters.page, filters.pageSize),
   })
+  const lastPage = groups.data ? Math.max(1, Math.ceil(groups.data.total / filters.pageSize)) : filters.page
+  const needsPageCorrection = groups.isSuccess && !groups.isFetching && filters.page > lastPage
+  useEffect(() => {
+    if (needsPageCorrection) setFiltersState((current) => ({ ...current, page: lastPage }))
+  }, [lastPage, needsPageCorrection])
   const downloaders = useQuery({ queryKey: ['downloaders'], queryFn: api.getDownloaders })
 	const moveTargets = useQuery({
 		queryKey: ['torrent-groups', 'move-targets'],
@@ -815,7 +820,7 @@ export function TorrentGroupsPage() {
       </div>
 
       <PageState
-        loading={groups.isLoading}
+        loading={groups.isLoading || needsPageCorrection}
         error={groups.error}
         onRetry={() => void groups.refetch()}
         empty={groups.data?.items.length === 0}

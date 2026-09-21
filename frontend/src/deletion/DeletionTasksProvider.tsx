@@ -29,14 +29,21 @@ export function DeletionTasksProvider({ children }: PropsWithChildren) {
   useEffect(() => saveTrackedJobIds(jobIds), [jobIds])
 
   useEffect(() => {
+    let needsRefresh = false
     for (const query of queries) {
       const job = query.data
       if (!job || !isDeleteJobTerminal(job) || observedTerminals.current.has(job.id)) continue
       observedTerminals.current.add(job.id)
-      for (const key of ['torrent-groups', 'torrent-group', 'overview', 'audit-events']) {
-        void queryClient.invalidateQueries({ queryKey: [key] })
-      }
+      needsRefresh = true
     }
+    if (!needsRefresh) return
+    void Promise.all(['torrent-groups', 'torrent-group', 'overview', 'audit-events'].map(async (key) => {
+      // Invalidation alone reuses an initial request with no cached data. That
+      // request may still contain tasks that have just been deleted. Cancel it
+      // first so its late response cannot overwrite the post-deletion snapshot.
+      await queryClient.cancelQueries({ queryKey: [key] })
+      await queryClient.invalidateQueries({ queryKey: [key] })
+    }))
   }, [queries, queryClient])
 
   const trackJob = useCallback((job: DeleteJob) => {
