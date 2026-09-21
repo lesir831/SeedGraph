@@ -51,6 +51,17 @@ export interface WireOverview {
 }
 
 export interface WireTorrentGroup {
+  categories?: string[] | null
+  paths?: string[] | null
+  downloaders?: string[] | null
+  runtime?: {
+    ratio_min: number | null
+    ratio_max: number | null
+    uploaded_bytes: number
+    downloaded_bytes: number
+    upload_speed: number
+    download_speed: number
+  } | null
   id: string
   name: string
   sites?: WireGroupSiteSummary[] | null
@@ -77,6 +88,11 @@ export interface WireGroupSiteSummary {
 }
 
 export interface WireTorrentInstance {
+  category?: string
+  uploaded_bytes?: number
+  downloaded_bytes?: number
+  upload_speed?: number
+  download_speed?: number
   id: string
   downloader_id: string
   downloader_name: string
@@ -275,6 +291,12 @@ const toTorrentInstance = (wire: WireTorrentInstance): TorrentInstance => ({
   hash: wire.stable_hash_key,
   name: wire.name,
   savePath: wire.canonical_path,
+  category: wire.category,
+  uploadedBytes: wire.uploaded_bytes,
+  downloadedBytes: wire.downloaded_bytes,
+  uploadSpeed: wire.upload_speed,
+  downloadSpeed: wire.download_speed,
+  lastSyncAt: wire.last_sync_at ?? undefined,
   totalSize: wire.wanted_bytes,
   progress: wire.progress,
   ratio: wire.ratio,
@@ -303,7 +325,18 @@ export const toTorrentGroup = (wire: WireTorrentGroup): TorrentGroup => {
     id: wire.id,
     name: wire.name,
     sites,
-    canonicalPath: instances[0]?.savePath ?? '',
+    canonicalPath: wire.paths?.[0] ?? instances[0]?.savePath ?? '',
+    categories: wire.categories ?? [],
+    paths: wire.paths ?? [],
+    downloaders: wire.downloaders ?? [],
+    runtime: wire.runtime ? {
+      ratioMin: wire.runtime.ratio_min ?? undefined,
+      ratioMax: wire.runtime.ratio_max ?? undefined,
+      uploadedBytes: wire.runtime.uploaded_bytes,
+      downloadedBytes: wire.runtime.downloaded_bytes,
+      uploadSpeed: wire.runtime.upload_speed,
+      downloadSpeed: wire.runtime.download_speed,
+    } : undefined,
     totalSize: wire.size_bytes,
     fileCount: 0,
     files: [],

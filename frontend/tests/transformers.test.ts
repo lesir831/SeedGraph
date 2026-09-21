@@ -87,6 +87,10 @@ describe('API model helpers', () => {
     const group = toTorrentGroup({
       id: 'group-1',
       name: 'Linux ISO',
+      categories: ['Movies'],
+      paths: ['/data/linux.iso'],
+      downloaders: ['NAS qB'],
+      runtime: { ratio_min: 2.5, ratio_max: 4, uploaded_bytes: 650, downloaded_bytes: 200, upload_speed: 40, download_speed: 60 },
       sites: [
         { key: 'site:example', label: 'Example', mapped: true },
         { key: 'tracker:tracker.unknown.test', label: 'Unknown · tracker.unknown.test', mapped: false },
@@ -118,12 +122,22 @@ describe('API model helpers', () => {
         status: 'seeding',
         progress: 1,
         ratio: 2.5,
+        category: 'Movies',
+        uploaded_bytes: 250,
+        downloaded_bytes: 100,
+        upload_speed: 10,
+        download_speed: 20,
+        last_sync_at: '2026-07-18T00:00:00Z',
         added_at: '2026-07-17T12:00:00Z',
         updated_at: '2026-07-18T00:00:00Z',
         sites: ['Example'],
       }],
     })
 
+    expect(group.categories).toEqual(['Movies'])
+    expect(group.downloaders).toEqual(['NAS qB'])
+    expect(group.paths).toEqual(['/data/linux.iso'])
+    expect(group.runtime).toEqual({ ratioMin: 2.5, ratioMax: 4, uploadedBytes: 650, downloadedBytes: 200, uploadSpeed: 40, downloadSpeed: 60 })
     expect(group.canonicalPath).toBe('/data/linux.iso')
     expect(group.groupingMethod).toBe('automatic')
     expect(group.sites).toEqual([
@@ -133,6 +147,12 @@ describe('API model helpers', () => {
     expect(group.oldestAddedAt).toBe('2026-07-17T12:00:00Z')
     expect(group.instances[0]).toMatchObject({
       hash: 'abc',
+      category: 'Movies',
+      uploadedBytes: 250,
+      downloadedBytes: 100,
+      uploadSpeed: 10,
+      downloadSpeed: 20,
+      lastSyncAt: '2026-07-18T00:00:00Z',
       trackerHost: 'Example',
       sites: ['Example'],
       addedAt: '2026-07-17T12:00:00Z',

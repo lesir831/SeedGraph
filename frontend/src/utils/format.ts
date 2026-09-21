@@ -55,3 +55,19 @@ const DELETE_BLOCKER_MESSAGES: Record<string, string> = {
 
 export const formatDeleteBlocker = (code: string, fallback: string): string =>
   DELETE_BLOCKER_MESSAGES[code] ?? fallback
+
+export const formatRatio = (value?: number): string =>
+  value === undefined || !Number.isFinite(value) || value < 0 ? '—' : value.toFixed(2)
+
+export const formatRatioRange = (minimum?: number, maximum?: number): string => {
+  if (minimum === undefined || maximum === undefined) return '—'
+  const low = formatRatio(minimum)
+  const high = formatRatio(maximum)
+  return low === high ? low : `${low} – ${high}`
+}
+
+export const formatOptionalBytes = (value?: number): string =>
+  value === undefined ? '—' : formatBytes(value)
+
+export const formatSpeed = (value?: number): string =>
+  value === undefined ? '—' : `${formatBytes(value)}/s`

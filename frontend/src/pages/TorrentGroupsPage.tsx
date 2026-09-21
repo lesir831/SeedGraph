@@ -50,7 +50,7 @@ import { GroupAdvancedSearchDrawer } from '../components/GroupAdvancedSearchDraw
 import { GroupSortDrawer } from '../components/GroupSortDrawer'
 import { PageHeader } from '../components/PageHeader'
 import { PageState } from '../components/PageState'
-import { displayError, formatBytes, formatDateTime } from '../utils/format'
+import { displayError, formatBytes, formatDateTime, formatOptionalBytes, formatRatio, formatRatioRange, formatSpeed } from '../utils/format'
 import { countGroupQueryConditions, summarizeGroupQuery } from '../utils/groupQuery'
 import { GROUP_SORT_LABELS, loadGroupSorts, saveGroupSorts } from '../utils/groupSortPreferences'
 import { useDeletionTasks } from '../deletion/deletion-context'
@@ -78,6 +78,37 @@ function GroupSiteTags({ sites, limit = 5 }: { sites: GroupSiteSummary[]; limit?
         {sites.length > limit && <Tag>+{sites.length - limit}</Tag>}
       </div>
     </Tooltip>
+  )
+}
+
+function GroupMetadata({ group }: { group: TorrentGroup }) {
+  const paths = group.paths ?? []
+  return (
+    <div className="group-resource-meta">
+      <div className="group-resource-tags">
+        <span>路径分类</span>
+        {group.categories?.length
+          ? group.categories.map((category) => <Tag key={category} color="cyan">{category}</Tag>)
+          : <span>未分类</span>}
+        {group.stale && <Tag color="warning">快照已过期</Tag>}
+      </div>
+      {!!group.downloaders?.length && <div className="group-downloader-names">{group.downloaders.join(' · ')}</div>}
+      {!!paths.length && (
+        <Tooltip title={<div>{paths.map((path) => <div key={path}>{path}</div>)}</div>} placement="topLeft">
+          <div className="group-path-line"><span>{paths[0]}</span>{paths.length > 1 && <Tag>+{paths.length - 1} 路径</Tag>}</div>
+        </Tooltip>
+      )}
+    </div>
+  )
+}
+
+function GroupTransfer({ group }: { group: TorrentGroup }) {
+  return (
+    <div className="group-transfer-metrics">
+      <div><span>上传</span><strong>{formatOptionalBytes(group.runtime?.uploadedBytes)}</strong></div>
+      <div><span>下载</span><strong>{formatOptionalBytes(group.runtime?.downloadedBytes)}</strong></div>
+      <div className="group-speed-line">↑ {formatSpeed(group.runtime?.uploadSpeed)} · ↓ {formatSpeed(group.runtime?.downloadSpeed)}</div>
+    </div>
   )
 }
 
@@ -287,6 +318,8 @@ export function TorrentGroupsPage() {
           <Tooltip title={instance.name} placement="topLeft">
             <span>{instance.name}</span>
           </Tooltip>
+          <span>路径分类：{instance.category || '未分类'}</span>
+          <Tooltip title={instance.savePath} placement="topLeft"><span>{instance.savePath || '—'}</span></Tooltip>
         </div>
       ),
     },
@@ -318,13 +351,29 @@ export function TorrentGroupsPage() {
       title: '分享率',
       dataIndex: 'ratio',
       width: 90,
-      render: (ratio: number) => ratio.toFixed(2),
+      render: formatRatio,
+    },
+    {
+      title: '累计传输 / 当前速度',
+      key: 'transfer',
+      width: 230,
+      render: (_, instance) => (
+        <div className="group-transfer-metrics">
+          <div><span>上传</span><strong>{formatOptionalBytes(instance.uploadedBytes)}</strong><span>{formatSpeed(instance.uploadSpeed)}</span></div>
+          <div><span>下载</span><strong>{formatOptionalBytes(instance.downloadedBytes)}</strong><span>{formatSpeed(instance.downloadSpeed)}</span></div>
+        </div>
+      ),
     },
     {
       title: '添加时间',
       dataIndex: 'addedAt',
       width: 170,
-      render: formatDateTime,
+      render: (_, instance) => (
+        <div className="group-time-cell">
+          <span>{formatDateTime(instance.addedAt)}</span>
+          <Tooltip title="下载器最后成功同步时间"><small>同步 {formatDateTime(instance.lastSyncAt)}</small></Tooltip>
+        </div>
+      ),
     },
     {
       title: '操作',
@@ -405,7 +454,7 @@ export function TorrentGroupsPage() {
     {
       title: '聚合内容',
       key: 'name',
-      width: 460,
+      width: 400,
       render: (_, group) => (
         <div className="primary-cell group-name-cell">
           <div className="group-title-row">
@@ -418,6 +467,7 @@ export function TorrentGroupsPage() {
             </div>
           </div>
           <GroupSiteTags sites={group.sites} />
+          <GroupMetadata group={group} />
         </div>
       ),
     },
@@ -433,6 +483,18 @@ export function TorrentGroupsPage() {
       width: 88,
       align: 'center',
       render: (value: number) => <strong className="group-instance-count">{value}</strong>,
+    },
+    {
+      title: <Tooltip title="同组任务的有效分享率范围；单个任务显示其分享率">分享率</Tooltip>,
+      key: 'ratio',
+      width: 130,
+      render: (_, group) => <strong className="group-metric-value">{formatRatioRange(group.runtime?.ratioMin, group.runtime?.ratioMax)}</strong>,
+    },
+    {
+      title: <Tooltip title="同组任务累计上传、下载量及最近同步时的合计速度">累计传输 / 当前速度</Tooltip>,
+      key: 'transfer',
+      width: 235,
+      render: (_, group) => <GroupTransfer group={group} />,
     },
     {
       title: '最旧添加时间',
@@ -461,7 +523,7 @@ export function TorrentGroupsPage() {
               pagination={false}
               columns={instanceColumns(group)}
               dataSource={group.instances}
-              scroll={{ x: 1080 }}
+              scroll={{ x: 1510 }}
             />
             <details className="manifest-details">
               <summary><FileOutlined /> 分组依据与物理副本</summary>
@@ -503,9 +565,16 @@ export function TorrentGroupsPage() {
       <Progress percent={Math.round((instance.progress > 1 ? instance.progress / 100 : instance.progress) * 100)} size="small" />
       <div className="mobile-instance-meta">
         <Tag color={stateColor(instance.state)}>{instance.state || 'unknown'}</Tag>
-        <span>分享率 {instance.ratio.toFixed(2)}</span>
-        <span>{formatDateTime(instance.addedAt)}</span>
+        <span>分享率 {formatRatio(instance.ratio)}</span>
+        <span>添加 {formatDateTime(instance.addedAt)}</span>
       </div>
+      <Descriptions size="small" column={1} className="mobile-instance-details">
+        <Descriptions.Item label="路径分类">{instance.category || '未分类'}</Descriptions.Item>
+        <Descriptions.Item label="路径"><span className="instance-path">{instance.savePath || '—'}</span></Descriptions.Item>
+        <Descriptions.Item label="累计上传">{formatOptionalBytes(instance.uploadedBytes)} · {formatSpeed(instance.uploadSpeed)}</Descriptions.Item>
+        <Descriptions.Item label="累计下载">{formatOptionalBytes(instance.downloadedBytes)} · {formatSpeed(instance.downloadSpeed)}</Descriptions.Item>
+        <Descriptions.Item label="最后同步">{formatDateTime(instance.lastSyncAt)}</Descriptions.Item>
+      </Descriptions>
       <div className="mobile-card-actions">
         {group.instances.length > 1 && group.groupingMethod === 'manual' && (
           <Popconfirm
@@ -553,11 +622,14 @@ export function TorrentGroupsPage() {
             </div>
           </div>
           <GroupSiteTags sites={group.sites} limit={4} />
+          <GroupMetadata group={group} />
           <div className="group-mobile-metrics">
             <div><span>大小</span><strong>{formatBytes(group.totalSize)}</strong></div>
             <div><span>实例</span><strong>{group.taskCount}</strong></div>
-            <div><span>最旧添加</span><strong>{formatDateTime(group.oldestAddedAt)}</strong></div>
+            <div><span>分享率</span><strong>{formatRatioRange(group.runtime?.ratioMin, group.runtime?.ratioMax)}</strong></div>
+            <div className="group-mobile-added"><span>最旧添加时间</span><strong>{formatDateTime(group.oldestAddedAt)}</strong></div>
           </div>
+          <GroupTransfer group={group} />
           <div className="mobile-card-actions">{renderGroupActions(group)}</div>
           <Collapse
             ghost
@@ -738,7 +810,7 @@ export function TorrentGroupsPage() {
                 },
               }}
               expandable={{ expandedRowRender: expandedRow }}
-              scroll={{ x: 1080 }}
+              scroll={{ x: 1380 }}
               pagination={{
                 current: groups.data?.page ?? filters.page,
                 pageSize: groups.data?.pageSize ?? filters.pageSize,

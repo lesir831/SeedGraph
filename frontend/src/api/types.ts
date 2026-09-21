@@ -36,6 +36,12 @@ export interface TorrentFile {
 }
 
 export interface TorrentInstance {
+  category?: string
+  uploadedBytes?: number
+  downloadedBytes?: number
+  uploadSpeed?: number
+  downloadSpeed?: number
+  lastSyncAt?: string
   id: string
   downloaderId: string
   downloaderName: string
@@ -59,7 +65,20 @@ export interface GroupSiteSummary {
   mapped: boolean
 }
 
+export interface TorrentGroupRuntime {
+  ratioMin?: number
+  ratioMax?: number
+  uploadedBytes: number
+  downloadedBytes: number
+  uploadSpeed: number
+  downloadSpeed: number
+}
+
 export interface TorrentGroup {
+  categories?: string[]
+  paths?: string[]
+  downloaders?: string[]
+  runtime?: TorrentGroupRuntime
   id: string
   name: string
   sites: GroupSiteSummary[]

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/lesir831/SeedGraph/internal/domain"
 )
 
 var ErrVersionConflict = errors.New("resource version conflict")
@@ -54,25 +55,43 @@ type GroupFilters struct {
 	Offset         int
 }
 
+type TorrentGroupRuntime struct {
+	RatioMin        *float64 `json:"ratio_min"`
+	RatioMax        *float64 `json:"ratio_max"`
+	UploadedBytes   int64    `json:"uploaded_bytes"`
+	DownloadedBytes int64    `json:"downloaded_bytes"`
+	UploadSpeed     int64    `json:"upload_speed"`
+	DownloadSpeed   int64    `json:"download_speed"`
+}
+
 type TorrentGroup struct {
-	ID              string             `json:"id"`
-	Name            string             `json:"name"`
-	SizeBytes       int64              `json:"size_bytes"`
-	TaskCount       int                `json:"task_count"`
-	SiteCount       int                `json:"site_count"`
-	DownloaderCount int                `json:"downloader_count"`
-	DataCopyCount   int                `json:"data_copy_count"`
-	Confidence      string             `json:"confidence"`
-	Mode            string             `json:"mode"`
-	Locked          bool               `json:"locked"`
-	Version         int                `json:"version"`
-	Stale           bool               `json:"stale"`
-	OldestAddedAt   time.Time          `json:"oldest_added_at"`
-	UpdatedAt       time.Time          `json:"updated_at"`
-	Sites           []TorrentGroupSite `json:"sites"`
+	Categories      []string             `json:"categories"`
+	Paths           []string             `json:"paths"`
+	Downloaders     []string             `json:"downloaders"`
+	Runtime         *TorrentGroupRuntime `json:"runtime"`
+	ID              string               `json:"id"`
+	Name            string               `json:"name"`
+	SizeBytes       int64                `json:"size_bytes"`
+	TaskCount       int                  `json:"task_count"`
+	SiteCount       int                  `json:"site_count"`
+	DownloaderCount int                  `json:"downloader_count"`
+	DataCopyCount   int                  `json:"data_copy_count"`
+	Confidence      string               `json:"confidence"`
+	Mode            string               `json:"mode"`
+	Locked          bool                 `json:"locked"`
+	Version         int                  `json:"version"`
+	Stale           bool                 `json:"stale"`
+	OldestAddedAt   time.Time            `json:"oldest_added_at"`
+	UpdatedAt       time.Time            `json:"updated_at"`
+	Sites           []TorrentGroupSite   `json:"sites"`
 }
 
 type TorrentInstanceView struct {
+	Category         string     `json:"category"`
+	UploadedBytes    int64      `json:"uploaded_bytes"`
+	DownloadedBytes  int64      `json:"downloaded_bytes"`
+	UploadSpeed      int64      `json:"upload_speed"`
+	DownloadSpeed    int64      `json:"download_speed"`
 	ID               string     `json:"id"`
 	DownloaderID     string     `json:"downloader_id"`
 	DownloaderName   string     `json:"downloader_name"`
@@ -298,6 +317,9 @@ func (s *Store) ListTorrentGroups(ctx context.Context, filters GroupFilters) ([]
 		return nil, 0, err
 	}
 	if err := s.populateTorrentGroupSites(ctx, groups); err != nil {
+		return nil, 0, err
+	}
+	if err := s.populateTorrentGroupSummaries(ctx, groups); err != nil {
 		return nil, 0, err
 	}
 	return groups, total, nil
@@ -561,7 +583,9 @@ func (s *Store) GetTorrentGroup(ctx context.Context, id string, staleBefore time
                ti.canonical_path, ti.storage_id, ti.wanted_bytes, ti.data_group_id,
 		       ti.assignment_source, COALESCE(ti.added_at, ti.first_seen_at),
 		       COALESCE(tr.status, 'unknown'), COALESCE(tr.progress, 0),
-               COALESCE(tr.ratio, 0), COALESCE(tr.updated_at, ti.last_seen_at), d.last_success_at
+               COALESCE(tr.ratio, 0), COALESCE(tr.updated_at, ti.last_seen_at), d.last_success_at,
+               COALESCE(tr.uploaded_bytes, 0), COALESCE(tr.downloaded_bytes, 0),
+               COALESCE(tr.upload_speed, 0), COALESCE(tr.download_speed, 0)
         FROM torrent_instances ti
         JOIN downloaders d ON d.id = ti.downloader_id
         LEFT JOIN torrent_runtime tr ON tr.instance_id = ti.id
@@ -581,9 +605,11 @@ func (s *Store) GetTorrentGroup(ctx context.Context, id string, staleBefore time
 			&instance.StableHashKey, &instance.Name, &instance.CanonicalPath, &instance.StorageID,
 			&instance.WantedBytes, &instance.DataGroupID, &instance.AssignmentSource, &addedAt,
 			&instance.Status, &instance.Progress, &instance.Ratio, &updatedAt, &lastSync,
+			&instance.UploadedBytes, &instance.DownloadedBytes, &instance.UploadSpeed, &instance.DownloadSpeed,
 		); err != nil {
 			return TorrentGroupDetail{}, err
 		}
+		instance.Category = domain.PathCategory(instance.CanonicalPath)
 		instance.AddedAt = time.Unix(addedAt, 0).UTC()
 		instance.UpdatedAt = time.Unix(updatedAt, 0).UTC()
 		if lastSync.Valid {

@@ -695,6 +695,70 @@ select {
   white-space: nowrap;
 }
 
+.group-resource-meta {
+  display: grid;
+  min-width: 0;
+  gap: 5px;
+  margin-top: 6px;
+  color: #64748b;
+  font-size: 12px;
+}
+
+.group-resource-tags,
+.group-path-line {
+  display: flex;
+  min-width: 0;
+  gap: 6px;
+  align-items: center;
+}
+
+.group-resource-tags {
+  flex-wrap: wrap;
+}
+
+.group-resource-tags .ant-tag {
+  max-width: 100%;
+  margin: 0;
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+
+.group-path-line > span,
+.group-downloader-names {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.group-transfer-metrics {
+  display: grid;
+  gap: 5px;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.group-transfer-metrics > div {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: baseline;
+}
+
+.group-transfer-metrics span,
+.group-speed-line,
+.group-time-cell small {
+  color: #64748b;
+}
+
+.group-time-cell {
+  display: grid;
+  gap: 4px;
+}
+
+.instance-path {
+  overflow-wrap: anywhere;
+}
+
 .group-instance-count {
   display: inline-grid;
   min-width: 34px;
@@ -1134,6 +1198,15 @@ select {
 }
 
 .group-mobile-metrics > div:last-child {
+  border-right: 0;
+}
+
+.group-mobile-metrics > .group-mobile-added {
+  grid-column: 1 / -1;
+  border-top: 1px solid #e8edf4;
+}
+
+.group-mobile-metrics > div:nth-child(3) {
   border-right: 0;
 }
 
