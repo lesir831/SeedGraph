@@ -6,7 +6,7 @@ import type { DeleteJob, DeletePlan, TorrentGroup } from '../api/types'
 import { displayError, formatDeleteBlocker } from '../utils/format'
 
 interface DeleteTasksModalProps {
-  group: TorrentGroup
+  groups: TorrentGroup[]
   initialInstanceIds: string[]
   onClose: () => void
   onSubmitted: (job: DeleteJob) => void | Promise<void>
@@ -15,12 +15,14 @@ interface DeleteTasksModalProps {
 const requiresNewPlan = (error: unknown) => error instanceof ApiError &&
   ['plan_expired', 'plan_changed', 'plan_blocked', 'conflict'].includes(error.code ?? '')
 
-export function DeleteTasksModal({ group, initialInstanceIds, onClose, onSubmitted }: DeleteTasksModalProps) {
+export function DeleteTasksModal({ groups, initialInstanceIds, onClose, onSubmitted }: DeleteTasksModalProps) {
+  const instances = groups.flatMap((group) => group.instances)
+  const groupId = groups.length === 1 ? groups[0].id : undefined
   const [instanceIds, setInstanceIds] = useState(initialInstanceIds)
   const [revision, setRevision] = useState(0)
   const preview = useQuery({
-    queryKey: ['delete-plan', group.id, instanceIds, revision],
-    queryFn: () => api.createDeletePlan({ groupId: group.id, instanceIds }),
+    queryKey: ['delete-plan', groups.map((group) => group.id), instanceIds, revision],
+    queryFn: () => api.createDeletePlan({ groupId, instanceIds }),
     enabled: instanceIds.length > 0,
     staleTime: 0,
     gcTime: 0,
@@ -41,14 +43,14 @@ export function DeleteTasksModal({ group, initialInstanceIds, onClose, onSubmitt
   const plan = preview.isError || preview.isFetching ? undefined : preview.data
   const deletesFiles = plan?.steps.some((step) => step.deleteData) ?? false
   const selectInstances = (ids: string[]) => {
-    setInstanceIds(group.instances.filter((instance) => ids.includes(instance.id)).map((instance) => instance.id))
+    setInstanceIds(instances.filter((instance) => ids.includes(instance.id)).map((instance) => instance.id))
     submission.reset()
   }
 
   return (
     <Modal
-      title="删除任务"
-      width={560}
+      title={groups.length > 1 ? '批量删除任务' : '删除任务'}
+      width={640}
       open
       onCancel={() => { if (!submission.isPending) onClose() }}
       closable={!submission.isPending}
@@ -66,29 +68,52 @@ export function DeleteTasksModal({ group, initialInstanceIds, onClose, onSubmitt
       }
     >
       <Space direction="vertical" size={16} className="modal-stack">
-        <Typography.Text strong className="delete-task-group-name">{group.name}</Typography.Text>
-        {group.instances.length > 1 && (
+        <Typography.Text>已选 {groups.filter((group) => group.instances.some((instance) => instanceIds.includes(instance.id))).length} 个任务组 · {instanceIds.length} 个任务</Typography.Text>
+        {instances.length > 1 && (
           <Checkbox disabled={submission.isPending}
-            checked={instanceIds.length === group.instances.length}
-            indeterminate={instanceIds.length > 0 && instanceIds.length < group.instances.length}
-            onChange={(event) => selectInstances(event.target.checked ? group.instances.map((instance) => instance.id) : [])}
-          >全选 · 已选 {instanceIds.length}/{group.instances.length} 个任务</Checkbox>
+            checked={instanceIds.length === instances.length}
+            indeterminate={instanceIds.length > 0 && instanceIds.length < instances.length}
+            onChange={(event) => selectInstances(event.target.checked ? instances.map((instance) => instance.id) : [])}
+          >全选 · 已选 {instanceIds.length}/{instances.length} 个任务</Checkbox>
         )}
-        <Checkbox.Group disabled={submission.isPending} value={instanceIds} onChange={(values) => selectInstances(values.map(String))} className="delete-task-options">
-          {group.instances.map((instance) => {
-            const step = plan?.steps.find((item) => item.instanceId === instance.id)
+        <div className="delete-task-groups">
+          {groups.map((group) => {
+            const selectedCount = group.instances.filter((instance) => instanceIds.includes(instance.id)).length
             return (
-              <Checkbox key={instance.id} value={instance.id} className="delete-task-option">
-                <span className="delete-task-option-heading">
-                  <strong>{instance.downloaderName}</strong>
-                  {step && <Tag color={step.deleteData ? 'error' : 'default'}>{step.deleteData ? '删除文件' : '仅删任务'}</Tag>}
-                </span>
-                <span className="delete-task-option-name">{instance.name}</span>
-                <small>{instance.savePath}</small>
-              </Checkbox>
+              <section key={group.id} className="delete-task-group">
+                {groups.length > 1 ? (
+                  <Checkbox disabled={submission.isPending}
+                    checked={selectedCount === group.instances.length}
+                    indeterminate={selectedCount > 0 && selectedCount < group.instances.length}
+                    onChange={(event) => {
+                      const otherIds = instanceIds.filter((id) => !group.instances.some((instance) => instance.id === id))
+                      selectInstances(event.target.checked ? [...otherIds, ...group.instances.map((instance) => instance.id)] : otherIds)
+                    }}
+                  ><strong>{group.name}</strong> · {selectedCount}/{group.instances.length}</Checkbox>
+                ) : <Typography.Text strong className="delete-task-group-name">{group.name}</Typography.Text>}
+                <Checkbox.Group disabled={submission.isPending} value={instanceIds}
+                  onChange={(values) => selectInstances([
+                    ...instanceIds.filter((id) => !group.instances.some((instance) => instance.id === id)),
+                    ...values.map(String),
+                  ])} className="delete-task-options">
+                  {group.instances.map((instance) => {
+                    const step = plan?.steps.find((item) => item.instanceId === instance.id)
+                    return (
+                      <Checkbox key={instance.id} value={instance.id} className="delete-task-option">
+                        <span className="delete-task-option-heading">
+                          <strong>{instance.downloaderName}</strong>
+                          {step && <Tag color={step.deleteData ? 'error' : 'default'}>{step.deleteData ? '删除文件' : '仅删任务'}</Tag>}
+                        </span>
+                        <span className="delete-task-option-name">{instance.name}</span>
+                        <small>{instance.savePath}</small>
+                      </Checkbox>
+                    )
+                  })}
+                </Checkbox.Group>
+              </section>
             )
           })}
-        </Checkbox.Group>
+        </div>
         {!instanceIds.length ? (
           <Typography.Text type="secondary">请选择要删除的任务。</Typography.Text>
         ) : preview.isFetching ? (

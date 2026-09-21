@@ -201,13 +201,13 @@ export interface PagedResponse<T> {
 }
 
 export interface DeletePlanInput {
-  groupId: string
+  groupId?: string
   instanceIds: string[]
 }
 
 export interface DeletePlan {
   id: string
-  groupId: string
+  groupId?: string
   selectedInstanceIds: string[]
   executable: boolean
   steps: Array<{

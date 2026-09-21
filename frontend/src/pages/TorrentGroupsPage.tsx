@@ -36,7 +36,7 @@ import {
   Typography,
   type TableColumnsType,
 } from 'antd'
-import { useMemo, useState, type Key, type ReactNode } from 'react'
+import { useMemo, useRef, useState, type ReactNode } from 'react'
 import { api } from '../api/client'
 import { normalizePagedResponse } from '../api/transformers'
 import type {
@@ -148,7 +148,7 @@ export function TorrentGroupsPage() {
   const { trackJob } = useDeletionTasks()
   const screens = Grid.useBreakpoint()
   const isMobile = !screens.md
-  const [filters, setFilters] = useState<GroupFilters>(() => ({
+  const [filters, setFiltersState] = useState<GroupFilters>(() => ({
     ...initialFilters,
     sorts: loadGroupSorts(),
   }))
@@ -156,11 +156,20 @@ export function TorrentGroupsPage() {
   const [advancedSearchOpen, setAdvancedSearchOpen] = useState(false)
   const [sortDrawerOpen, setSortDrawerOpen] = useState(false)
   const [mobileExpandedGroupIds, setMobileExpandedGroupIds] = useState<string[]>([])
-  const [selectedGroupIds, setSelectedGroupIds] = useState<Key[]>([])
   const [selectedGroups, setSelectedGroups] = useState<TorrentGroup[]>([])
+  const selectedGroupIds = selectedGroups.map((group) => group.id)
+  const deleteLoading = useRef(false)
+  const setFilters = (update: (current: GroupFilters) => GroupFilters) => {
+    const next = update(filters)
+    if (next.query !== filters.query || next.status !== filters.status ||
+      next.downloaderId !== filters.downloaderId || next.filter !== filters.filter) {
+      setSelectedGroups([])
+    }
+    setFiltersState(next)
+  }
   const [mergeOpen, setMergeOpen] = useState(false)
   const [mergeForm] = Form.useForm<MergeFormValues>()
-  const [deleteSelection, setDeleteSelection] = useState<{ group: TorrentGroup; instanceIds: string[] }>()
+  const [deleteSelection, setDeleteSelection] = useState<{ groups: TorrentGroup[]; instanceIds: string[] }>()
   const [detailLoadingId, setDetailLoadingId] = useState<string>()
 	const [moveSelection, setMoveSelection] = useState<MoveSelection>()
 	const [moveTargetId, setMoveTargetId] = useState<string>()
@@ -216,7 +225,6 @@ export function TorrentGroupsPage() {
     onSuccess: async (group) => {
       void message.success('手动分组已保存')
 		if (group.operationId) setLastOperation({ id: group.operationId, label: '合并分组' })
-      setSelectedGroupIds([])
       setSelectedGroups([])
       setMergeOpen(false)
       mergeForm.resetFields()
@@ -280,30 +288,54 @@ export function TorrentGroupsPage() {
     onError: (error) => void message.error(displayError(error)),
   })
 
-  const openDeleteModal = async (group: TorrentGroup, instanceId?: string) => {
-    if (detailLoadingId || deleteSelection) return
-    setDetailLoadingId(group.id)
+  const openDeleteModal = async (targets: TorrentGroup[], instanceId?: string) => {
+    if (deleteLoading.current || deleteSelection || !targets.length) return
+    deleteLoading.current = true
+    setDetailLoadingId(targets.length === 1 ? targets[0].id : 'batch')
     try {
-      const detail = await queryClient.fetchQuery({
-        queryKey: ['torrent-group', group.id],
-        queryFn: () => api.getGroup(group.id),
-        staleTime: 0,
-      })
-      const instanceIds = detail.instances
+      // Load current membership for every selected group before creating one
+      // shared plan, so physical data references are checked across the batch.
+      const details: TorrentGroup[] = []
+      for (let offset = 0; offset < targets.length; offset += 5) {
+        const batch = await Promise.all(targets.slice(offset, offset + 5).map(async (group) => {
+          try {
+            const detail = await queryClient.fetchQuery({
+              queryKey: ['torrent-group', group.id],
+              queryFn: () => api.getGroup(group.id),
+              staleTime: 0,
+              retry: false,
+            })
+            if (!detail.instances.length) throw new Error('任务已不存在，请刷新列表')
+            return detail
+          } catch (error) {
+            throw new Error(`${group.name}：${displayError(error)}`)
+          }
+        }))
+        details.push(...batch)
+      }
+      const instanceIds = Array.from(new Set(details.flatMap((group) => group.instances)
         .filter((instance) => !instanceId || instance.id === instanceId)
-        .map((instance) => instance.id)
+        .map((instance) => instance.id)))
       if (!instanceIds.length) {
         void message.info('任务已不存在，请刷新列表')
         await invalidateGroups()
         return
       }
-      setDeleteSelection({ group: detail, instanceIds })
+      setDeleteSelection({ groups: details, instanceIds })
     } catch (error) {
-      void message.error(displayError(error))
+      void message.error(`无法准备删除：${displayError(error)}`)
     } finally {
+      deleteLoading.current = false
       setDetailLoadingId(undefined)
     }
   }
+  const selectionBusy = Boolean(detailLoadingId || deleteSelection || mergeOpen)
+  const pageGroups = groups.data?.items ?? []
+  const selectedOnPage = pageGroups.filter((group) => selectedGroupIds.includes(group.id)).length
+  const selectPage = (selected: boolean) => setSelectedGroups((current) => {
+    const otherPages = current.filter((group) => !pageGroups.some((item) => item.id === group.id))
+    return selected ? [...otherPages, ...pageGroups] : otherPages
+  })
 
   const instanceColumns = (group: TorrentGroup): TableColumnsType<TorrentInstance> => [
     {
@@ -404,7 +436,7 @@ export function TorrentGroupsPage() {
 			>
 				移动
 			</Button>
-          <Button type="text" danger size="small" aria-label="删除此任务" icon={<DeleteOutlined />} onClick={() => void openDeleteModal(group, instance.id)}>
+          <Button type="text" danger size="small" aria-label="删除此任务" disabled={selectionBusy} icon={<DeleteOutlined />} onClick={() => void openDeleteModal([group], instance.id)}>
             删除
           </Button>
         </Space>
@@ -442,8 +474,9 @@ export function TorrentGroupsPage() {
         size="small"
         icon={<DeleteOutlined />}
         loading={detailLoadingId === group.id}
+        disabled={selectionBusy}
         aria-label="删除任务组"
-        onClick={() => void openDeleteModal(group)}
+        onClick={() => void openDeleteModal([group])}
       >
         删除
       </Button>
@@ -543,9 +576,6 @@ export function TorrentGroupsPage() {
   )
 
   const setGroupSelected = (group: TorrentGroup, selected: boolean) => {
-    setSelectedGroupIds((current) => selected
-      ? [...current.filter((key) => key !== group.id), group.id]
-      : current.filter((key) => key !== group.id))
     setSelectedGroups((current) => selected
       ? [...current.filter((item) => item.id !== group.id), group]
       : current.filter((item) => item.id !== group.id))
@@ -598,7 +628,7 @@ export function TorrentGroupsPage() {
         >
           移动
         </Button>
-        <Button type="text" danger size="small" aria-label="删除此任务" icon={<DeleteOutlined />} onClick={() => void openDeleteModal(group, instance.id)}>
+        <Button type="text" danger size="small" aria-label="删除此任务" disabled={selectionBusy} icon={<DeleteOutlined />} onClick={() => void openDeleteModal([group], instance.id)}>
           删除
         </Button>
       </div>
@@ -612,7 +642,7 @@ export function TorrentGroupsPage() {
       <List.Item key={group.id}>
         <Card className="group-mobile-card">
           <div className="group-mobile-heading">
-            <Checkbox checked={selected} onChange={(event) => setGroupSelected(group, event.target.checked)} />
+            <Checkbox aria-label={`选择任务组 ${group.name}`} disabled={selectionBusy} checked={selected} onChange={(event) => setGroupSelected(group, event.target.checked)} />
             <div className="group-mobile-title">
               <Typography.Text strong title={group.name}>{group.name}</Typography.Text>
               <div className="group-title-tags">
@@ -663,13 +693,6 @@ export function TorrentGroupsPage() {
         description="按规范路径、总大小和文件清单识别同一内容；展开任务组可核对每个下载器实例。"
         extra={
           <>
-            <Button
-              icon={<MergeCellsOutlined />}
-              disabled={selectedGroupIds.length < 2}
-              onClick={() => setMergeOpen(true)}
-            >
-              手动合并 {selectedGroupIds.length ? `(${selectedGroupIds.length})` : ''}
-            </Button>
             <Button icon={<ReloadOutlined spin={groups.isFetching} />} onClick={() => void invalidateGroups()}>刷新</Button>
           </>
         }
@@ -774,6 +797,23 @@ export function TorrentGroupsPage() {
         </div>
       </Card>
 
+      <div className="group-selection-bar" role="region" aria-label="批量操作">
+        <Space wrap>
+          <Checkbox checked={pageGroups.length > 0 && selectedOnPage === pageGroups.length}
+            indeterminate={selectedOnPage > 0 && selectedOnPage < pageGroups.length}
+            disabled={selectionBusy || groups.isFetching || !pageGroups.length}
+            onChange={(event) => selectPage(event.target.checked)}>全选当前页</Checkbox>
+          <Typography.Text>已选 {selectedGroups.length} 个任务组</Typography.Text>
+          {selectedGroups.length > selectedOnPage && <Typography.Text type="secondary">含其他页 {selectedGroups.length - selectedOnPage} 个</Typography.Text>}
+        </Space>
+        <Space wrap>
+          <Button type="text" disabled={!selectedGroups.length || selectionBusy} onClick={() => setSelectedGroups([])}>清空选择</Button>
+          <Button icon={<MergeCellsOutlined />} disabled={selectedGroups.length < 2 || selectionBusy} onClick={() => setMergeOpen(true)}>手动合并</Button>
+          <Button danger aria-label="批量删除" icon={<DeleteOutlined />} disabled={!selectedGroups.length || selectionBusy}
+            loading={Boolean(detailLoadingId)} onClick={() => void openDeleteModal(selectedGroups)}>批量删除</Button>
+        </Space>
+      </div>
+
       <PageState
         loading={groups.isLoading}
         error={groups.error}
@@ -804,9 +844,16 @@ export function TorrentGroupsPage() {
               dataSource={groups.data?.items}
               rowSelection={{
                 selectedRowKeys: selectedGroupIds,
-                onChange: (keys, rows) => {
-                  setSelectedGroupIds(keys)
-                  setSelectedGroups(rows)
+                preserveSelectedRowKeys: true,
+                getCheckboxProps: (group) => ({ disabled: selectionBusy, 'aria-label': `选择任务组 ${group.name}` }),
+                onChange: (keys) => {
+                  setSelectedGroups((current) => {
+                    const byId = new Map([...current, ...pageGroups].map((group) => [group.id, group]))
+                    return keys.flatMap((id) => {
+                      const group = byId.get(String(id))
+                      return group ? [group] : []
+                    })
+                  })
                 },
               }}
               expandable={{ expandedRowRender: expandedRow }}
@@ -913,11 +960,12 @@ export function TorrentGroupsPage() {
 
       {deleteSelection && (
         <DeleteTasksModal
-          group={deleteSelection.group}
+          groups={deleteSelection.groups}
           initialInstanceIds={deleteSelection.instanceIds}
           onClose={() => setDeleteSelection(undefined)}
           onSubmitted={async (job) => {
             trackJob(job)
+            setSelectedGroups((current) => current.filter((group) => !deleteSelection.groups.some((item) => item.id === group.id)))
             setDeleteSelection(undefined)
             await invalidateGroups()
           }}

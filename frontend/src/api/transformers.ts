@@ -452,7 +452,7 @@ export const toAuditEvent = (wire: WireAuditEvent): AuditEvent => {
   }
 }
 
-export const toDeletePlan = (wire: WireDeletePlan, groupId: string): DeletePlan => ({
+export const toDeletePlan = (wire: WireDeletePlan, groupId?: string): DeletePlan => ({
   id: wire.id,
   groupId,
   selectedInstanceIds: wire.selected_instance_ids ?? [],

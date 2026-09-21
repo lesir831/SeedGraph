@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { App as AntApp } from 'antd'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { MemoryRouter } from 'react-router-dom'
@@ -41,10 +41,16 @@ const plan = toDeletePlan({
   steps: [{ order: 1, instance_id: 'instance', downloader_id: 'downloader', content_group_id: 'group', data_group_id: 'data', delete_data: true }],
 }, 'group')
 
-function renderFlow(selectedGroup = group) {
+function renderFlow(selectedGroup = group, listedGroups = [selectedGroup], mobile = false) {
+  if (mobile) {
+    vi.spyOn(window, 'matchMedia').mockImplementation((query) => ({
+      matches: query.includes('max-width'), media: query, onchange: null,
+      addListener: vi.fn(), removeListener: vi.fn(), addEventListener: vi.fn(), removeEventListener: vi.fn(), dispatchEvent: vi.fn(),
+    }))
+  }
   const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })
-  vi.spyOn(api, 'getGroups').mockResolvedValue({ items: [selectedGroup], total: 1, page: 1, pageSize: 20 })
-  vi.spyOn(api, 'getGroup').mockResolvedValue(selectedGroup)
+  vi.spyOn(api, 'getGroups').mockResolvedValue({ items: listedGroups, total: listedGroups.length, page: 1, pageSize: 20 })
+  vi.spyOn(api, 'getGroup').mockImplementation((id) => Promise.resolve(listedGroups.find((item) => item.id === id) ?? selectedGroup))
   vi.spyOn(api, 'getDownloaders').mockResolvedValue([])
   vi.spyOn(api, 'createDeletePlan').mockResolvedValue(plan)
   const trackJob = vi.fn()
@@ -148,6 +154,104 @@ describe('single-dialog deletion flow', () => {
     await waitFor(() => expect(trackJob).toHaveBeenCalledWith(job))
     expect(api.createDeletePlan).toHaveBeenCalledOnce()
     expect(submit.mock.calls.map(([submittedPlan]) => submittedPlan.id)).toEqual(['plan', 'plan'])
+  })
+})
+
+const secondGroup = {
+  ...group, id: 'second-group', name: 'Fedora ISO',
+  instances: [{ ...group.instances[0], id: 'second-instance', name: 'Fedora ISO', downloaderName: 'Second NAS' }],
+}
+
+const batchPlan = {
+  ...plan, groupId: undefined, selectedInstanceIds: ['instance', 'second-instance'],
+  steps: [...plan.steps, { ...plan.steps[0], order: 2, instanceId: 'second-instance', contentGroupId: 'second-group' }],
+}
+
+async function selectBatch() {
+  await waitFor(() => expect(screen.getByRole('checkbox', { name: '全选当前页' })).toBeEnabled())
+  fireEvent.click(screen.getByRole('checkbox', { name: '全选当前页' }))
+  expect(screen.getByText('已选 2 个任务组')).toBeVisible()
+  fireEvent.click(screen.getByRole('button', { name: '批量删除' }))
+  return screen.findByRole('dialog', { name: '批量删除任务' })
+}
+
+describe('bulk selection and deletion', () => {
+  it.each([false, true])('submits one cross-group plan, tracks the job and clears selection (mobile=%s)', async (mobile) => {
+    const { trackJob } = renderFlow(group, [group, secondGroup], mobile)
+    vi.mocked(api.createDeletePlan).mockResolvedValue(batchPlan)
+    const submit = vi.spyOn(api, 'createDeleteJob').mockResolvedValue(job)
+    const dialog = await selectBatch()
+    expect(api.getGroup).toHaveBeenCalledWith('group')
+    expect(api.getGroup).toHaveBeenCalledWith('second-group')
+    await waitFor(() => expect(api.createDeletePlan).toHaveBeenCalledWith({ groupId: undefined, instanceIds: ['instance', 'second-instance'] }))
+    await waitFor(() => expect(within(dialog).getByText('已选 2 个任务组 · 2 个任务')).toBeVisible())
+    expect(within(dialog).getByRole('checkbox', { name: /Test NAS/ })).toBeChecked()
+    expect(within(dialog).getByRole('checkbox', { name: /Second NAS/ })).toBeChecked()
+    const confirm = await within(dialog).findByRole('button', { name: '删除任务及文件' })
+    await waitFor(() => expect(confirm).toBeEnabled())
+    fireEvent.click(confirm)
+    await waitFor(() => expect(trackJob).toHaveBeenCalledWith(job))
+    expect(submit).toHaveBeenCalledOnce()
+    expect(submit).toHaveBeenCalledWith(batchPlan, expect.anything())
+    expect(screen.getByText('已选 0 个任务组')).toBeVisible()
+    expect(screen.getByRole('button', { name: '批量删除' })).toBeDisabled()
+  })
+
+  it('updates a shared preview when deselecting a group or individual task and preserves selection on cancel', async () => {
+    renderFlow(group, [group, secondGroup])
+    const preview = vi.mocked(api.createDeletePlan).mockResolvedValue(batchPlan)
+    const submit = vi.spyOn(api, 'createDeleteJob')
+    const dialog = await selectBatch()
+    await within(dialog).findByRole('button', { name: '删除任务及文件' })
+    fireEvent.click(within(dialog).getByRole('checkbox', { name: /Fedora ISO ·/ }))
+    await waitFor(() => expect(preview).toHaveBeenLastCalledWith({ groupId: undefined, instanceIds: ['instance'] }))
+    fireEvent.click(within(dialog).getByRole('checkbox', { name: /Second NAS/ }))
+    await waitFor(() => expect(preview).toHaveBeenLastCalledWith({ groupId: undefined, instanceIds: ['instance', 'second-instance'] }))
+    fireEvent.click(within(dialog).getByRole('button', { name: /取.*消/ }))
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    expect(screen.getByText('已选 2 个任务组')).toBeVisible()
+    expect(submit).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', { name: '清空选择' }))
+    expect(screen.getByRole('button', { name: '批量删除' })).toBeDisabled()
+  })
+
+  it('does not open a partial deletion if any selected group fails to load', async () => {
+    renderFlow(group, [group, secondGroup])
+    vi.mocked(api.getGroup).mockImplementation((id) => id === secondGroup.id
+      ? Promise.reject(new Error('网络中断'))
+      : Promise.resolve(group))
+    await waitFor(() => expect(screen.getByRole('checkbox', { name: '全选当前页' })).toBeEnabled())
+    fireEvent.click(screen.getByRole('checkbox', { name: '全选当前页' }))
+    fireEvent.click(screen.getByRole('button', { name: '批量删除' }))
+    await screen.findByText('无法准备删除：Fedora ISO：网络中断')
+    expect(api.createDeletePlan).not.toHaveBeenCalled()
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    expect(screen.getByText('已选 2 个任务组')).toBeVisible()
+    expect(screen.getByRole('button', { name: '批量删除' })).toBeEnabled()
+  })
+
+  it('preserves selections across pages and clears them when the search changes', async () => {
+    const { client } = renderFlow(group, [group, secondGroup])
+    vi.mocked(api.getGroups).mockImplementation((filters) => Promise.resolve({
+      items: filters.page === 2 ? [secondGroup] : [group], total: 21, page: filters.page, pageSize: 20,
+    }))
+    fireEvent.click(await screen.findByRole('checkbox', { name: '选择任务组 Ubuntu ISO' }))
+    await act(async () => { await client.invalidateQueries({ queryKey: ['torrent-groups'] }) })
+    fireEvent.click(await screen.findByTitle('2'))
+    fireEvent.click(await screen.findByRole('checkbox', { name: '选择任务组 Fedora ISO' }))
+    expect(screen.getByText('已选 2 个任务组')).toBeVisible()
+    expect(screen.getByText('含其他页 1 个')).toBeVisible()
+    fireEvent.click(screen.getByTitle('1'))
+    expect(await screen.findByRole('checkbox', { name: '选择任务组 Ubuntu ISO' })).toBeChecked()
+    await waitFor(() => expect(screen.getByRole('checkbox', { name: '全选当前页' })).toBeEnabled())
+    fireEvent.click(screen.getByRole('checkbox', { name: '全选当前页' }))
+    expect(screen.getByText('已选 1 个任务组')).toBeVisible()
+    expect(screen.getByText('含其他页 1 个')).toBeVisible()
+    const search = screen.getByPlaceholderText('搜索名称或存放路径')
+    fireEvent.change(search, { target: { value: 'Fedora' } })
+    fireEvent.keyDown(search, { key: 'Enter', code: 'Enter', keyCode: 13 })
+    expect(screen.getByText('已选 0 个任务组')).toBeVisible()
+    expect(screen.getByRole('button', { name: '批量删除' })).toBeDisabled()
   })
 })
 

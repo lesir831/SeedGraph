@@ -21,6 +21,17 @@ describe('audit and deletion APIs', () => {
     expect(result).toMatchObject({ total: 251, page: 11, pageSize: 20, items: [{ id: 'event', details: { instances: ['instance'] } }] })
   })
 
+  it('previews a cross-group batch in one request without requiring a group ID', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({ data: { plan: {
+      id: 'batch-plan', selected_instance_ids: ['first', 'second'], executable: true, steps: [], blockers: [],
+    } } }), { headers: { 'content-type': 'application/json' } }))
+    const result = await api.createDeletePlan({ instanceIds: ['first', 'second'] })
+    expect(fetchMock).toHaveBeenCalledOnce()
+    expect(fetchMock.mock.calls[0][1]?.body).toBe(JSON.stringify({ instance_ids: ['first', 'second'] }))
+    expect(result).toMatchObject({ id: 'batch-plan', selectedInstanceIds: ['first', 'second'], executable: true })
+    expect(result.groupId).toBeUndefined()
+  })
+
   it('keeps an identical idempotency key when retrying a submitted deletion', async () => {
     const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(() => Promise.resolve(new Response(JSON.stringify({
       id: 'job', plan_id: 'plan', status: 'running', internal_status: 'verifying', created_at: 'now', steps: [],
