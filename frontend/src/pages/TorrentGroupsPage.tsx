@@ -41,12 +41,14 @@ import { api } from '../api/client'
 import { normalizePagedResponse } from '../api/transformers'
 import type {
   GroupFilters,
+  GroupQueryFilter,
   GroupSiteSummary,
   GroupSortRule,
   TorrentGroup,
   TorrentInstance,
 } from '../api/types'
 import { GroupAdvancedSearchDrawer } from '../components/GroupAdvancedSearchDrawer'
+import { GroupSearchPresets } from '../components/GroupSearchPresets'
 import { GroupSortDrawer } from '../components/GroupSortDrawer'
 import { PageHeader } from '../components/PageHeader'
 import { PageState } from '../components/PageState'
@@ -155,6 +157,8 @@ export function TorrentGroupsPage() {
   const [searchDraft, setSearchDraft] = useState('')
   const [advancedSearchOpen, setAdvancedSearchOpen] = useState(false)
   const [sortDrawerOpen, setSortDrawerOpen] = useState(false)
+  const [selectedPresetIds, setSelectedPresetIds] = useState<string[]>([])
+  const [presetToSave, setPresetToSave] = useState<GroupQueryFilter>()
   const [mobileExpandedGroupIds, setMobileExpandedGroupIds] = useState<string[]>([])
   const [selectedGroups, setSelectedGroups] = useState<TorrentGroup[]>([])
   const selectedGroupIds = selectedGroups.map((group) => group.id)
@@ -165,6 +169,7 @@ export function TorrentGroupsPage() {
       next.downloaderId !== filters.downloaderId || next.filter !== filters.filter) {
       setSelectedGroups([])
     }
+    if (next.filter !== filters.filter) setSelectedPresetIds([])
     setFiltersState(next)
   }
   const [mergeOpen, setMergeOpen] = useState(false)
@@ -764,6 +769,13 @@ export function TorrentGroupsPage() {
           <Button icon={<FilterOutlined />} type={advancedFilterCount ? 'primary' : 'default'} onClick={() => setAdvancedSearchOpen(true)}>
             高级搜索{advancedFilterCount ? ` (${advancedFilterCount})` : ''}
           </Button>
+          <GroupSearchPresets selectedIds={selectedPresetIds} saveFilter={presetToSave}
+            labels={{ sites: siteLabels, downloaders: downloaderLabels }}
+            onApply={(filter, ids) => {
+              setFilters((current) => ({ ...current, filter, page: 1 }))
+              setSelectedPresetIds(ids)
+            }}
+            onSaveClose={() => setPresetToSave(undefined)} onDetach={() => setSelectedPresetIds([])} />
           <Button icon={<SortAscendingOutlined />} onClick={() => setSortDrawerOpen(true)}>
             多级排序 ({filters.sorts?.length ?? 0})
           </Button>
@@ -887,6 +899,7 @@ export function TorrentGroupsPage() {
         onRetrySiteOptions={() => void groupSiteOptions.refetch()}
         onClose={() => setAdvancedSearchOpen(false)}
         onApply={(filter) => setFilters((current) => ({ ...current, filter, page: 1 }))}
+        onSavePreset={setPresetToSave}
       />
       <GroupSortDrawer
         open={sortDrawerOpen}

@@ -179,6 +179,12 @@ export interface GroupQueryFilter {
   root: GroupQueryGroup
 }
 
+export interface GroupSearchPreset {
+  id: string
+  name: string
+  filter: GroupQueryFilter
+}
+
 export interface GroupFilters {
   query?: string
   filter?: GroupQueryFilter

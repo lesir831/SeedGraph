@@ -38,6 +38,7 @@ import type {
   Downloader,
   DownloaderInput,
   GroupFilters,
+  GroupSearchPreset,
 	GroupSiteSummary,
 	IYUUCatalog,
 	IYUUSiteFilters,
@@ -209,6 +210,14 @@ export const api = {
     })
     return normalizeWirePage(wire, toTorrentGroup, filters.page, filters.pageSize)
   },
+  getSearchPresets: (): Promise<GroupSearchPreset[]> => request('/search-presets'),
+  createSearchPreset: (input: Pick<GroupSearchPreset, 'name' | 'filter'>): Promise<GroupSearchPreset> => {
+    const filter = groupQueryFilterForWire(input.filter)
+    if (!filter) throw new Error('请先配置有效的高级搜索条件')
+    return request('/search-presets', { method: 'POST', body: json({ name: input.name.trim(), filter }) })
+  },
+  deleteSearchPreset: (id: string): Promise<void> => request(`/search-presets/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+
   getGroupSiteOptions: async (): Promise<GroupSiteSummary[]> => {
     const wire = await request<WireGroupSiteSummary[] | { items?: WireGroupSiteSummary[] | null }>(
       '/torrent-groups/site-options',

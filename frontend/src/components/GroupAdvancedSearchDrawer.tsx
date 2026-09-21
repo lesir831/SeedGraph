@@ -4,6 +4,7 @@ import {
   DeleteOutlined,
   PlusOutlined,
   SearchOutlined,
+  SaveOutlined,
 } from '@ant-design/icons'
 import {
   Alert,
@@ -73,6 +74,7 @@ interface GroupAdvancedSearchDrawerProps {
   onRetrySiteOptions?: () => void
   onClose: () => void
   onApply: (filter?: GroupQueryFilter) => void
+  onSavePreset?: (filter: GroupQueryFilter) => void
 }
 
 const fieldOptions = [
@@ -638,6 +640,7 @@ export function GroupAdvancedSearchDrawer({
   onRetrySiteOptions,
   onClose,
   onApply,
+  onSavePreset,
 }: GroupAdvancedSearchDrawerProps) {
   const { message } = App.useApp()
   const [draft, setDraft] = useState<DraftGroup>(() => toDraft(filter))
@@ -694,7 +697,12 @@ export function GroupAdvancedSearchDrawer({
       onClose={onClose}
       footer={(
         <div className="drawer-footer-actions">
-          <Button onClick={clear}>清空高级条件</Button>
+          <Space wrap>
+            <Button onClick={clear}>清空高级条件</Button>
+            {onSavePreset && <Button icon={<SaveOutlined />} aria-label="保存为预设"
+              disabled={incompleteConditions > 0 || !validation.valid || !candidate}
+              onClick={() => { if (candidate) onSavePreset(candidate) }}>保存为预设</Button>}
+          </Space>
           <Space>
             <Button onClick={onClose}>取消</Button>
             <Button type="primary" icon={<SearchOutlined />} onClick={apply}>应用搜索</Button>

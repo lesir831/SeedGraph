@@ -1800,6 +1800,50 @@ select {
   border-radius: 12px;
 }
 
+.search-presets-panel {
+  width: min(400px, calc(100vw - 48px));
+}
+
+.search-presets-panel > .ant-typography {
+  display: block;
+  margin-bottom: 10px;
+}
+
+.search-presets-list {
+  display: grid;
+  gap: 8px;
+  max-height: 350px;
+  overflow-y: auto;
+}
+
+.search-preset-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 0;
+  border-bottom: 1px solid #edf0f5;
+}
+
+.search-preset-row .ant-checkbox-wrapper {
+  min-width: 0;
+  align-items: flex-start;
+  overflow-wrap: anywhere;
+}
+
+.search-preset-row small {
+  display: block;
+  margin-top: 4px;
+  color: #64748b;
+}
+
+.search-presets-actions {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 12px;
+}
+
 .delete-task-groups {
   display: grid;
   gap: 16px;

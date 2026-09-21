@@ -248,3 +248,20 @@ describe('tracker mapping API', () => {
     expect(result.page).toBe(3)
   })
 })
+
+
+describe('search preset API', () => {
+  it('saves a normalized advanced filter without editor-only unit hints', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({ data: {
+      id: 'preset', name: 'Small', filter: { version: 1, root: { type: 'group', combinator: 'and', children: [] } },
+    } }), { headers: { 'content-type': 'application/json' } }))
+    await api.createSearchPreset({ name: ' Small ', filter: { version: 1, root: {
+      type: 'group', combinator: 'and', children: [{ type: 'condition', field: 'size', operator: 'lt', value: 1024, displayUnit: 'KiB' }],
+    } } })
+    expect(fetchMock.mock.calls[0][0]).toBe('/api/v1/search-presets')
+    expect(fetchMock.mock.calls[0][1]?.method).toBe('POST')
+    expect(fetchMock.mock.calls[0][1]?.body).toBe(JSON.stringify({ name: 'Small', filter: { version: 1, root: {
+      type: 'group', combinator: 'and', children: [{ type: 'condition', field: 'size', operator: 'lt', value: 1024 }],
+    } } }))
+  })
+})
